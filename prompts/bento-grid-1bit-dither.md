@@ -1,6 +1,6 @@
 # Dithered Bento Grid
 
-Demo: [bento-grid-1bit-dither](../bento-grid-1bit-dither/)
+Demo: [bento-grid-1bit-dither](../bento-grid-1bit-dither/) (BF16), [nvfp4-bento-grid-1bit-dither](../nvfp4-bento-grid-1bit-dither/) (NVFP4), [q8-bento-grid-1bit-dither](../q8-bento-grid-1bit-dither/) (Q8)
 
 Create a single self-contained HTML file using only HTML, CSS, and JavaScript. No build tools, frameworks, or external assets. Focus on visual polish: spacing, typography, color, and motion.
 

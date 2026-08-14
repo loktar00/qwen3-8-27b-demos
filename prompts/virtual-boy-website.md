@@ -1,6 +1,6 @@
 # Virtual Boy Microsite
 
-Demo: [virtual-boy-website](../virtual-boy-website/)
+Demo: [virtual-boy-website](../virtual-boy-website/) (BF16), [nvfp4-virtual-boy-website](../nvfp4-virtual-boy-website/) (NVFP4), [q8-virtual-boy-website-2](../q8-virtual-boy-website-2/) (Q8)
 
 Your team has been contracted on a $500,000 project to create a premium retro technology microsite for the Nintendo Virtual Boy.
 

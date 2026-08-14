@@ -1,6 +1,6 @@
 # Stationery Retail Catalogue
 
-Demo: [stationery-retail-catalogue](../stationery-retail-catalogue/)
+Demo: [stationery-retail-catalogue](../stationery-retail-catalogue/) (BF16), [nvfp4-stationery-retail-catalogue](../nvfp4-stationery-retail-catalogue/) (NVFP4), [q8-stationery-retail-catalogue](../q8-stationery-retail-catalogue/) (Q8)
 
 Build a traditional, responsive, multi-section colorful retail catalogue for a playful independent stationery and paper-goods shop. Its purpose is to encourage discovery across small products and gift bundles. Art direction: Confident flat color, expressive product silhouettes, oversized type, sticker-like accents, and responsive but disciplined motion. Use paper layers, punchy inks, and neatly bounded sticker-like details. Include these sections: seasonal desk; product categories; build-a-set; artist collaborations; shipping and returns. Include these site features: category and color filters; bundle savings; stock states. The main interaction is: A bundle tray accepts five items and updates color balance and total.
 

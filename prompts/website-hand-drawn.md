@@ -1,6 +1,6 @@
 # The Moss Notebook
 
-Demo: [website-hand-drawn](../website-hand-drawn/)
+Demo: [website-hand-drawn](../website-hand-drawn/) (BF16), [nvfp4-website-hand-drawn](../nvfp4-website-hand-drawn/) (NVFP4), [q8-website-hand-drawn](../q8-website-hand-drawn/) (Q8)
 
 Create one complete, self-contained HTML file for THE MOSS NOTEBOOK, a naturalist's hand-drawn field journal documenting a year of forests, fungi, streams, birds, and tiny discoveries.
 
