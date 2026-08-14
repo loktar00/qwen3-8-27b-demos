@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>forest fire — sketch ca</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#f4ecdb}
+  canvas{display:block}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+
+/* ---------- helpers ---------- */
+function clamp(v,a,b){return v<a?a:(v>b?b:v);}
+function mkCanvas(w,h){const c=document.createElement('canvas');c.width=w;c.height=h;return c;}
+function wobblyCircle(g,cx,cy,r,seg,amp){
+  for(let i=0;i<=seg;i++){
+    const a=i/seg*Math.PI*2;
+    const rr=r*(1+(Math.random()-0.5)*amp);
+    const x=cx+Math.cos(a)*rr, y=cy+Math.sin(a)*rr;
+    if(i)g.lineTo(x,y);else g.moveTo(x,y);
+  }
+  g.closePath();
+}
+function wobblyLine(g,x1,y1,x2,y2,seg,amp){
+  for(let i=0;i<=seg;i++){
+    const t=i/seg;
+    const x=x1+(x2-x1)*t+(i>0&&i<seg?(Math.random()-0.5)*amp:0);
+    const y=y1+(y2-y1)*t+(i>0&&i<seg?(Math.random()-0.5)*amp:0);
+    if(i)g.lineTo(x,y);else g.moveTo(x,y);
+  }
+}
+
+/* ---------- one-time pre-rendered textures ---------- */
+const TS=48;
+let treeTiles=[], saplingTiles=[], flameTiles=[], charTile, puffTile, paper;
+
+function makeTree(){
+  const c=mkCanvas(TS,TS),g=c.getContext('2d');
+  g.strokeStyle='#4a3a26';g.lineWidth=2;g.lineCap='round';
+  const cx=TS/2, base=TS-6, top=TS*0.44;
+  g.beginPath();wobblyLine(g,cx-1.5,top,cx-1.5,base,4,1.4);g.stroke();
+  g.beginPath();wobblyLine(g,cx+1.5,top,cx+1.5,base,4,1.4);g.stroke();
+  for(let k=0;k<3;k++){
+    g.beginPath();
+    wobblyCircle(g,cx+(Math.random()-0.5)*TS*0.26,TS*0.31+(Math.random()-0.5)*TS*0.2,
+                 TS*(0.15+Math.random()*0.08),9,0.28);
+    g.stroke();
+  }
+  return c;
+}
+function makeSapling(){
+  const c=mkCanvas(TS,TS),g=c.getContext('2d');
+  g.strokeStyle='#54422b';g.lineWidth=1.6;g.lineCap='round';
+  const cx=TS/2;
+  g.beginPath();wobblyLine(g,cx,TS-7,cx,TS*0.58,3,1.2);g.stroke();
+  g.beginPath();wobblyCircle(g,cx,TS*0.5,TS*0.13,8,0.35);g.stroke();
+  return c;
+}
+function makeFlame(){
+  const c=mkCanvas(TS,TS),g=c.getContext('2d');
+  g.lineCap='round';
+  const cx=TS/2, base=TS-7, tip=TS*0.13;
+  const cols=['#a83614','#cf5518','#ef8f2e'];
+  for(let k=0;k<3;k++){
+    const shrink=(k+1)*0.22;
+    g.strokeStyle=cols[k];g.lineWidth=2.4-k*0.4;
+    g.beginPath();
+    const segs=7;
+    for(let s=0;s<=segs;s++){
+      const t=s/segs;
+      const spread=(TS*0.16)*(1-shrink*t)*(1-t*0.65);
+      const x=cx+Math.sin(t*Math.PI*2.2+k*1.3+Math.random()*1.2)*spread;
+      const y=base-t*(base-tip);
+      if(s)g.lineTo(x,y);else g.moveTo(x,y);
+    }
+    g.stroke();
+  }
+  g.strokeStyle='#ef8f2e';g.lineWidth=1.2;
+  for(let k=0;k<3;k++){
+    const sx=cx+(Math.random()-0.5)*TS*0.5, sy=TS*0.3+Math.random()*TS*0.4;
+    g.beginPath();wobblyLine(g,sx,sy,sx+(Math.random()-0.5)*6,sy-6,2,1);g.stroke();
+  }
+  return c;
+}
+function makeChar(){
+  const c=mkCanvas(TS,TS),g=c.getContext('2d');
+  g.strokeStyle='rgba(52,42,31,0.9)';g.lineWidth=2;g.lineCap='round';
+  g.beginPath();wobblyCircle(g,TS/2,TS*0.64,TS*0.2,8,0.35);g.stroke();
+  g.lineWidth=1.1;
+  g.beginPath();wobblyLine(g,TS*0.4,TS*0.62,TS*0.6,TS*0.55,3,2);g.stroke();
+  g.beginPath();wobblyLine(g,TS*0.44,TS*0.7,TS*0.62,TS*0.66,3,2);g.stroke();
+  return c;
+}
+function makePuff(){
+  const c=mkCanvas(64,64),g=c.getContext('2d');
+  const rg=g.createRadialGradient(32,32,4,32,32,30);
+  rg.addColorStop(0,'rgba(125,115,98,0.35)');
+  rg.addColorStop(1,'rgba(125,115,98,0)');
+  g.fillStyle=rg;g.fillRect(0,0,64,64);
+  g.strokeStyle='rgba(110,100,85,0.15)';g.lineWidth=1.5;
+  g.beginPath();wobblyCircle(g,32,32,18,10,0.25);g.stroke();
+  return c;
+}
+function makePaper(){
+  paper=mkCanvas(W,H);
+  const g=paper.getContext('2d');
+  g.fillStyle='#f4ecdb';g.fillRect(0,0,W,H);
+  g.fillStyle='rgba(110,85,50,0.06)';
+  const n=Math.floor(W*H/6000);
+  for(let i=0;i<n;i++)g.fillRect(Math.random()*W,Math.random()*H,2,2);
+  g.strokeStyle='rgba(120,95,60,0.05)';g.lineWidth=1;
+  const m=Math.floor(W*H/9000);
+  for(let i=0;i<m;i++){
+    const x=Math.random()*W,y=Math.random()*H,a=Math.random()*Math.PI*2,l=8+Math.random()*18;
+    g.beginPath();g.moveTo(x,y);g.lineTo(x+Math.cos(a)*l,y+Math.sin(a)*l);g.stroke();
+  }
+}
+
+/* ---------- grid state ---------- */
+let W,H,cols,rows,N,csx,csy;
+let stateA,stateB,fuelA,fuelB,seed,jx,jy;
+let fireCount=0;
+let windPhase=Math.random()*100;
+let windX=0,windY=0;
+
+function seedGrid(){
+  for(let i=0;i<N;i++){
+    const r=Math.random();
+    if(r<0.55){stateA[i]=3;fuelA[i]=0;}
+    else if(r<0.74){stateA[i]=2;fuelA[i]=Math.random()*0.6;}
+    else{stateA[i]=0;fuelA[i]=0;}
+    seed[i]=(Math.random()*1000)|0;
+    jx[i]=(Math.random()-0.5)*csx*0.2;
+    jy[i]=(Math.random()-0.5)*csy*0.2;
+  }
+  for(let k=0;k<3;k++){
+    const i=(Math.random()*N)|0;
+    stateA[i]=4;fuelA[i]=1;
+    const x=i%cols,y=(i/cols)|0;
+    if(x>0){stateA[i-1]=4;fuelA[i-1]=1;}
+    if(y>0){stateA[i-cols]=4;fuelA[i-cols]=1;}
+  }
+}
+
+function init(){
+  W=canvas.width=window.innerWidth;
+  H=canvas.height=window.innerHeight;
+  cols=clamp(Math.round(W/10),80,160);
+  rows=clamp(Math.round(H/10),80,160);
+  N=cols*rows;
+  csx=W/cols;csy=H/rows;
+  stateA=new Uint8Array(N);stateB=new Uint8Array(N);
+  fuelA=new Float32Array(N);fuelB=new Float32Array(N);
+  seed=new Int32Array(N);jx=new Float32Array(N);jy=new Float32Array(N);
+  seedGrid();
+  makePaper();
+}
+
+/* ---------- cellular automaton (fixed low-cost step rate) ---------- */
+function igniteCluster(){
+  for(let tries=0;tries<24;tries++){
+    const i=(Math.random()*N)|0;
+    if(stateB[i]===3||stateB[i]===2){stateB[i]=4;fuelB[i]=1;return;}
+  }
+}
+function stepCA(){
+  windX=Math.sin(windPhase*0.05)*0.55;
+  windY=Math.cos(windPhase*0.031)*0.35;
+  let fc=0;
+  for(let i=0;i<N;i++){
+    const s=stateA[i];let ns=s,nf=fuelA[i];
+    if(s===1){nf+=0.0035;if(nf>=1){ns=2;nf=0;}}
+    else if(s===2){nf+=0.005;if(nf>=1){ns=3;nf=0;}}
+    else if(s===4){nf-=0.045;if(nf<=0){ns=1;nf=0;}else fc++;}
+    stateB[i]=ns;fuelB[i]=nf;
+  }
+  fireCount=fc;
+  // spread pass — only from live fire cells, writing into B (safe: only tree/sapling cells targeted)
+  const pT=0.34,pS=0.10;
+  for(let y=0;y<rows;y++){
+    const row=y*cols;
+    for(let x=0;x<cols;x++){
+      const i=row+x;
+      if(stateA[i]!==4||fuelA[i]<=0.045)continue;
+      if(x<cols-1){
+        const n=stateA[i+1];
+        if(n===3&&Math.random()<pT*(1+windX)){stateB[i+1]=4;fuelB[i+1]=1;}
+        else if(n===2&&Math.random()<pS){stateB[i+1]=4;fuelB[i+1]=1;}
+      }
+      if(x>0){
+        const n=stateA[i-1];
+        if(n===3&&Math.random()<pT*(1-windX)){stateB[i-1]=4;fuelB[i-1]=1;}
+        else if(n===2&&Math.random()<pS){stateB[i-1]=4;fuelB[i-1]=1;}
+      }
+      if(y>0){
+        const n=stateA[i-cols];
+        if(n===3&&Math.random()<pT*(1-windY)){stateB[i-cols]=4;fuelB[i-cols]=1;}
+        else if(n===2&&Math.random()<pS){stateB[i-cols]=4;fuelB[i-cols]=1;}
+      }
+      if(y<rows-1){
+        const n=stateA[i+cols];
+        if(n===3&&Math.random()<pT*(1+windY)){stateB[i+cols]=4;fuelB[i+cols]=1;}
+        else if(n===2&&Math.random()<pS){stateB[i+cols]=4;fuelB[i+cols]=1;}
+      }
+    }
+  }
+  // keep the scene evolving: spontaneous ignitions when the forest quiets
+  if(fireCount===0){igniteCluster();igniteCluster();}
+  else if(fireCount<60&&Math.random()<0.2){igniteCluster();}
+  let t;
+  t=stateA;stateA=stateB;stateB=t;
+  t=fuelA;fuelA=fuelB;fuelB=t;
+}
+
+/* ---------- particle pool (fixed ceiling, recycled) ---------- */
+const PMAX=240;
+const ppx=new Float32Array(PMAX),ppy=new Float32Array(PMAX),
+      pvx=new Float32Array(PMAX),pvy=new Float32Array(PMAX),
+      plife=new Float32Array(PMAX),pmax=new Float32Array(PMAX),
+      psize=new Float32Array(PMAX);
+const ptype=new Uint8Array(PMAX);
+let pcur=0;
+function spawn(px,py,type){
+  const i=pcur;pcur=(pcur+1)%PMAX;
+  ppx[i]=px;ppy[i]=py;ptype[i]=type;
+  if(type===0){
+    pvx[i]=(Math.random()-0.5)*0.8;
+    pvy[i]=-0.6-Math.random()*1.2;
+    psize[i]=1.5+Math.random()*1.5;
+    plife[i]=pmax[i]=35+(Math.random()*45|0);
+  }else{
+    pvx[i]=(Math.random()-0.5)*0.3;
+    pvy[i]=-0.4-Math.random()*0.4;
+    psize[i]=6+Math.random()*4;
+    plife[i]=pmax[i]=80+(Math.random()*60|0);
+  }
+}
+function updateParticles(){
+  const wdx=windX*0.25;
+  for(let i=0;i<PMAX;i++){
+    if(plife[i]<=0)continue;
+    plife[i]--;
+    ppx[i]+=pvx[i]+wdx;
+    ppy[i]+=pvy[i];
+    const a=plife[i]/pmax[i];
+    if(ptype[i]===0){
+      pvy[i]*=0.985;
+      ctx.globalAlpha=Math.min(1,a*1.4);
+      ctx.fillStyle=(i&1)?'#d95f1e':'#b83c17';
+      const s=psize[i]*(0.5+a*0.5);
+      ctx.fillRect(ppx[i],ppy[i],s,s);
+    }else{
+      pvy[i]*=0.99;
+      psize[i]+=0.15;
+      ctx.globalAlpha=a*0.5;
+      const s=psize[i];
+      ctx.drawImage(puffTile,ppx[i]-s*0.5,ppy[i]-s*0.5,s,s);
+    }
+  }
+  ctx.globalAlpha=1;
+}
+
+/* ---------- render (every frame, cheap blits only) ---------- */
+let frame=0;
+function render(){
+  ctx.drawImage(paper,0,0);
+  for(let i=0;i<N;i++){
+    const s=stateA[i];
+    if(s===0)continue;
+    const x=(i%cols)*csx+jx[i];
+    const y=((i/cols)|0)*csy+jy[i];
+    const sv=seed[i];
+    if(s===1){
+      ctx.drawImage(charTile,x,y,csx,csy);
+    }else if(s===2){
+      ctx.drawImage(saplingTiles[sv&1],x,csy*0.45-y*0.05,csx,csy*0.9);
+    }else if(s===3){
+      ctx.drawImage(treeTiles[sv&3],x,y,csx,csy);
+    }else{
+      const fl=csx*0.06*((sv&3)+1)*0.3;
+      ctx.drawImage(flameTiles[(sv+frame)%3],x-fl,y-fl,csx+fl*2,csy+fl*2);
+      if(Math.random()<0.05)spawn(x+csx*0.5,y+csy*0.3,0);
+      if(Math.random()<0.012)spawn(x+csx*0.5,y,1);
+    }
+  }
+  updateParticles();
+}
+
+/* ---------- main loop ---------- */
+const STEP_MS=1000/13; // CA runs at ~13 steps/sec, render runs every frame
+let last=0,acc=0;
+function tick(t){
+  requestAnimationFrame(tick);
+  if(!last)last=t;
+  let dt=t-last;last=t;
+  if(dt>100)dt=100;
+  acc+=dt;
+  while(acc>=STEP_MS){stepCA();windPhase+=1;acc-=STEP_MS;}
+  render();
+  frame++;
+}
+
+/* ---------- boot / resize ---------- */
+treeTiles=[makeTree(),makeTree(),makeTree(),makeTree()];
+saplingTiles=[makeSapling(),makeSapling()];
+flameTiles=[makeFlame(),makeFlame(),makeFlame()];
+charTile=makeChar();
+puffTile=makePuff();
+function onResize(){init();}
+window.addEventListener('resize',onResize);
+init();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
