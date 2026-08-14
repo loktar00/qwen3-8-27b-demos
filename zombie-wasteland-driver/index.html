@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WASTELAND DERBY</title>
+<style>
+ html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#14100a;}
+ #c{display:block;cursor:crosshair;image-rendering:pixelated;}
+ .hud{position:fixed;z-index:5;font-family:"Courier New",monospace;color:#efe4c8;user-select:none;pointer-events:none;letter-spacing:1px;}
+ #plate{top:14px;left:14px;background:rgba(16,10,5,.82);border:2px solid #efe4c8;box-shadow:5px 5px 0 rgba(0,0,0,.55);padding:10px 14px;font-size:13px;line-height:1.5;min-width:240px;}
+ #plate b{color:#5ff0dd;}
+ .bar{width:210px;height:12px;border:2px solid #efe4c8;margin:5px 0 3px;background:#1b130b;}
+ #hp{height:100%;background:#efe4c8;width:100%;}
+ #wep{font-size:12px;color:#d8c9a4;}
+ #drv{color:#5ff0dd;font-weight:bold;}
+ #feed{top:14px;right:14px;text-align:right;font-size:12px;line-height:1.7;}
+ .msg{background:rgba(16,10,5,.72);padding:2px 8px;border-right:3px solid #c25b3a;margin-bottom:4px;display:inline-block;}
+ #ctrl{bottom:12px;left:50%;transform:translateX(-50%);font-size:12px;background:rgba(16,10,5,.8);border:1px solid #6e5f45;padding:6px 14px;white-space:nowrap;}
+ #title{bottom:12px;right:14px;font-size:11px;color:#8a7a5c;}
+ #dmg{position:fixed;inset:0;z-index:4;pointer-events:none;box-shadow:inset 0 0 90px 34px rgba(178,60,30,.85);opacity:0;}
+ #vign{position:fixed;inset:0;z-index:3;pointer-events:none;box-shadow:inset 0 0 140px 40px rgba(8,5,3,.55);}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="vign"></div>
+<div id="dmg"></div>
+<div id="plate" class="hud"><b>MAIN</b> · <span id="drv">AUTO</span><div class="bar"><div id="hp"></div></div><div id="wep">MACHINE GUN</div></div>
+<div id="feed" class="hud"></div>
+<div id="ctrl" class="hud">WASD / ARROWS drive · MOUSE aim · CLICK / SPACE fire · hands-off → autopilot takes over</div>
+<div id="title" class="hud">WASTELAND DERBY · 1-BIT</div>
+<script>
+'use strict';
+/* ==================== SETUP & CANVAS ==================== */
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let vw=0,vh=0,dpr=1;
+function resize(){vw=innerWidth;vh=innerHeight;dpr=Math.min(devicePixelRatio||1,2);
+ cv.width=vw*dpr;cv.height=vh*dpr;cv.style.width=vw+'px';cv.style.height=vh+'px';}
+addEventListener('resize',resize);resize();
+const TAU=Math.PI*2;
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+function angDiff(a,b){let d=(a-b)%TAU;if(d>Math.PI)d-=TAU;if(d<-Math.PI)d+=TAU;return d;}
+function mulberry32(s){return function(){s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
+const B4=[0,8,2,10,12,4,14,6,3,11,1,9,13,5,15,7];
+let now=0,frameCount=0;
+
+/* ==================== INPUT ==================== */
+const keys={};
+const mouse={x:innerWidth/2,y:innerHeight/2,down:false};
+let lastInput=-1e9;
+function markInput(){lastInput=now;}
+addEventListener('keydown',e=>{
+ keys[e.code]=true;markInput();
+ if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();
+});
+addEventListener('keyup',e=>{keys[e.code]=false;});
+addEventListener('mousemove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;});
+addEventListener('mousedown',e=>{mouse.down=true;markInput();});
+addEventListener('mouseup',e=>{mouse.down=false;});
+addEventListener('contextmenu',e=>e.preventDefault());
+function manualActive(){return now-lastInput<6;}
+
+/* ==================== WORLD GENERATION ==================== */
+const W=3200,H=3200,BORDER=30;
+const worldCv=document.createElement('canvas');worldCv.width=W;worldCv.height=H;
+const wctx=worldCv.getContext('2d');
+const rnd=mulberry32(97531);
+function h2(x,y){const s=Math.sin(x*127.1+y*311.7)*43758.5453;return s-Math.floor(s);}
+function cell(x,y){const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+ const a=h2(xi,yi),b=h2(xi+1,yi),c=h2(xi,yi+1),d=h2(xi+1,yi+1);
+ const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+ return a*(1-u)*(1-v)+b*u*(1-v)+c*(1-u)*v+d*u*v;}
+// Bayer dithered "ink" patterns
+function makeInk(c2,r,g,b){const c=document.createElement('canvas');c.width=c.height=4;const g2=c.getContext('2d');
+ g2.fillStyle='rgb('+r+','+g+','+b+')';
+ for(let y=0;y<4;y++)for(let x=0;x<4;x++)if(B4[y*4+x]<8)g2.fillRect(x,y,1,1);
+ return c2.createPattern(c,'repeat');}
+const inkDark=makeInk(wctx,10,6,3),inkLight=makeInk(wctx,232,220,196),inkRust=makeInk(wctx,158,78,44);
+const pInkDark=makeInk(ctx,10,6,3),pInkLight=makeInk(ctx,232,220,196);
+
+function buildGround(){
+ const img=wctx.createImageData(W,H),D=img.data;
+ for(let y=0;y<H;y+=2)for(let x=0;x<W;x+=2){
+  const v=0.14+0.15*cell(x/57,y/57)+0.05*cell(x/9,y/9)+(h2(x,y)-.5)*.05-.03;
+  const on=v>B4[(y&3)*4+(x&3)]/16;
+  const r=on?226:26,gg=on?212:17,b=on?184:10;
+  for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++){
+   const i=((y+dy)*W+(x+dx))<<2;D[i]=r;D[i+1]=gg;D[i+2]=b;D[i+3]=255;}
+ }
+ wctx.putImageData(img,0,0);
+ // faded highway cross
+ wctx.globalAlpha=0.22;wctx.fillStyle=inkLight;
+ wctx.fillRect(1460,0,280,H);wctx.fillRect(0,1460,W,280);
+ wctx.globalAlpha=0.5;
+ for(let s=20;s<H;s+=90){wctx.fillRect(1596,s,8,44);wctx.fillRect(s,1596,44,8);}
+ wctx.fillStyle=inkDark;
+ wctx.fillRect(1464,0,4,H);wctx.fillRect(1732,0,4,H);wctx.fillRect(0,1464,W,4);wctx.fillRect(0,1732,W,4);
+ wctx.globalAlpha=1;
+ // cracks
+ wctx.strokeStyle='rgba(12,7,4,0.55)';wctx.lineWidth=1.5;
+ for(let i=0;i<42;i++){let x=rnd()*W,y=rnd()*H;wctx.beginPath();wctx.moveTo(x,y);
+  const n=4+(rnd()*6|0);
+  for(let j=0;j<n;j++){x+=(rnd()-.5)*120;y+=(rnd()-.5)*120;wctx.lineTo(x,y);}
+  wctx.stroke();}
+ // rust stains
+ for(let i=0;i<34;i++){wctx.globalAlpha=0.16+rnd()*0.2;wctx.fillStyle=inkDark;
+  const x=rnd()*W,y=rnd()*H,r=20+rnd()*60;
+  wctx.beginPath();wctx.arc(x,y,r,0,TAU);wctx.fill();}
+ // rocks
+ for(let i=0;i<46;i++){const x=rnd()*W,y=rnd()*H,r=3+rnd()*11;
+  wctx.globalAlpha=0.9;wctx.fillStyle=inkDark;wctx.beginPath();wctx.arc(x,y,r,0,TAU);wctx.fill();
+  wctx.globalAlpha=0.4;wctx.fillStyle=inkLight;wctx.beginPath();wctx.arc(x-r*.3,y-r*.3,r*.35,0,TAU);wctx.fill();}
+ // ancient tire tracks
+ wctx.strokeStyle=inkDark;wctx.lineWidth=6;wctx.setLineDash([20,16]);
+ for(let i=0;i<8;i++){const x=rnd()*W,y=rnd()*H,a=rnd()*TAU,L=300+rnd()*600;
+  wctx.globalAlpha=0.25;
+  for(const off of[-7,7]){
+   const ox=Math.cos(a+Math.PI/2)*off,oy=Math.sin(a+Math.PI/2)*off;
+   wctx.beginPath();wctx.moveTo(x+ox,y+oy);wctx.lineTo(x+ox+Math.cos(a)*L,y+oy+Math.sin(a)*L);wctx.stroke();}}
+ wctx.setLineDash([]);wctx.globalAlpha=1;
+ // arena border
+ wctx.fillStyle=inkDark;wctx.globalAlpha=0.95;
+ wctx.fillRect(0,0,W,BORDER);wctx.fillRect(0,H-BORDER,W,BORDER);
+ wctx.fillRect(0,0,BORDER,H);wctx.fillRect(W-BORDER,0,BORDER,H);
+ wctx.globalAlpha=0.5;wctx.strokeStyle=inkLight;wctx.lineWidth=4;wctx.setLineDash([28,22]);
+ wctx.strokeRect(38,38,W-76,H-76);wctx.setLineDash([]);wctx.globalAlpha=1;
+}
+
+const rects=[],circles=[];
+function addRect(x,y,w,h,kind){rects.push({x,y,w,h,kind});}
+function addCircle(x,y,r,kind){circles.push({x,y,r,kind});}
+function genObstacles(){
+ addRect(700,640,240,34,'barrier');
+ addRect(560,1200,34,260,'barrier');
+ addRect(2360,560,34,280,'barrier');
+ addRect(2300,2260,280,36,'barrier');
+ addRect(1460,300,300,36,'barrier');
+ addRect(1100,2400,320,36,'barrier');
+ addRect(2560,1400,34,300,'barrier');
+ addRect(420,1900,260,34,'barrier');
+ addRect(980,940,90,64,'wreck');
+ addRect(2180,1980,96,60,'wreck');
+ addRect(1760,1160,80,70,'wreck');
+ addCircle(1250,1700,30,'rock');addCircle(2050,900,34,'rock');addCircle(760,2650,28,'rock');
+ addCircle(2620,1900,36,'rock');addCircle(1600,2200,26,'rock');
+ addCircle(1050,1350,20,'tires');addCircle(2250,1500,20,'tires');addCircle(1500,800,18,'tires');
+}
+function drawObstacles(){
+ for(const o of rects){
+  if(o.kind==='barrier'){
+   wctx.globalAlpha=0.95;wctx.fillStyle=inkLight;wctx.fillRect(o.x,o.y,o.w,o.h);
+   wctx.globalAlpha=0.45;wctx.fillStyle=inkDark;wctx.fillRect(o.x,o.y,o.w,o.h);
+   wctx.globalAlpha=1;wctx.strokeStyle='#120c06';wctx.lineWidth=3;wctx.strokeRect(o.x,o.y,o.w,o.h);
+   wctx.globalAlpha=0.5;wctx.strokeStyle=inkDark;wctx.lineWidth=2;
+   wctx.beginPath();wctx.moveTo(o.x+o.w*.35,o.y);wctx.lineTo(o.x+o.w*.5,o.y+o.h);wctx.stroke();
+  }else{
+   wctx.globalAlpha=0.95;wctx.fillStyle=inkDark;wctx.fillRect(o.x,o.y,o.w,o.h);
+   wctx.globalAlpha=0.35;wctx.fillStyle=inkRust;
+   wctx.fillRect(o.x+6,o.y+6,o.w*.4,o.h*.5);
+   wctx.globalAlpha=0.5;wctx.fillStyle=inkLight;wctx.fillRect(o.x,o.y,o.w,4);
+   wctx.globalAlpha=1;wctx.strokeStyle='#0c0703';wctx.lineWidth=3;wctx.strokeRect(o.x,o.y,o.w,o.h);
+  }
+  wctx.globalAlpha=1;
+ }
+ for(const c of circles){
+  if(c.kind==='rock'){
+   wctx.globalAlpha=0.95;wctx.fillStyle=inkDark;wctx.beginPath();wctx.arc(c.x,c.y,c.r,0,TAU);wctx.fill();
+   wctx.globalAlpha=0.4;wctx.fillStyle=inkLight;wctx.beginPath();wctx.arc(c.x-c.r*.25,c.y-c.r*.25,c.r*.4,0,TAU);wctx.fill();
+   wctx.globalAlpha=0.35;wctx.fillStyle=inkRust;wctx.beginPath();wctx.arc(c.x+c.r*.3,c.y+c.r*.2,c.r*.3,0,TAU);wctx.fill();
+  }else{
+   wctx.globalAlpha=0.95;wctx.fillStyle=inkDark;wctx.beginPath();wctx.arc(c.x,c.y,c.r,0,TAU);wctx.fill();
+   wctx.globalAlpha=0.5;wctx.strokeStyle=inkLight;wctx.lineWidth=4;
+   wctx.beginPath();wctx.arc(c.x,c.y,c.r*.55,0,TAU);wctx.stroke();
+  }
+  wctx.globalAlpha=1;
+ }
+}
+function clearOfObstacles(x,y,m){
+ if(x<m+BORDER||y<m+BORDER||x>W-m-BORDER||y>H-m-BORDER)return false;
+ for(const o of rects)if(x>o.x-m&&x<o.x+o.w+m&&y>o.y-m&&y<o.y+o.h+m)return false;
+ for(const c of circles){const dx=x-c.x,dy=y-c.y;if(dx*dx+dy*dy<(c.r+m)*(c.r+m))return false;}
+ return true;
+}
+const spawns=[];
+function genSpawns(){
+ let g=0;
+ while(spawns.length<26&&g<6000){g++;
+  const x=150+rnd()*(W-300),y=150+rnd()*(H-300);
+  if(!clearOfObstacles(x,y,95))continue;
+  let ok=true;
+  for(const s of spawns){const dx=s.x-x,dy=s.y-y;if(dx*dx+dy*dy<420*420){ok=false;break;}}
+  if(ok)spawns.push({x,y});
+ }
+}
+function pointBlocked(x,y){
+ if(x<BORDER+60||y<BORDER+60||x>W-BORDER-60||y>H-BORDER-60)return true;
+ for(const o of rects)if(x>o.x-30&&x<o.x+o.w+30&&y>o.y-30&&y<o.y+o.h+30)return true;
+ for(const c of circles){const dx=x-c.x,dy=y-c.y,rr=c.r+34;if(dx*dx+dy*dy<rr*rr)return true;}
+ return false;
+}
+const ring=[];const RC={x:W/2,y:H/2},RR=1250;
+for(let i=0;i<10;i++){const a=i/10*TAU;ring.push({x:RC.x+Math.cos(a)*RR,y:RC.y+Math.sin(a)*RR});}
+
+/* ==================== CARS ==================== */
+const PALETTES=[
+ ['#5ff0dd','#15444b','#0b2a2e'],
+ ['#c25b3a','#5e2415','#e08a5f'],
+ ['#d98f3a','#6e3d14','#f2b878'],
+ ['#d6b64e','#6e5a1e','#efd98d'],
+ ['#9aa04a','#454a1c','#c8c97e'],
+ ['#4aa8a0','#1c4a46','#8fd8d0'],
+ ['#5a7fae','#26385a','#9db8d8'],
+ ['#9a7ab8','#463360','#c9b2e0'],
+ ['#e8dcc0','#8a7c5e','#fff8e6'],
+];
+const NAMES=['MAIN','JAW','RUSTY','SPIKE','MULE','HANK','VESPER','DUSTY','COBALT'];
+const cars=[];
+function makeCarPattern(pal,variant){
+ const c=document.createElement('canvas');c.width=c.height=32;const g=c.getContext('2d');
+ g.fillStyle=pal[1];g.fillRect(0,0,32,32);
+ g.fillStyle=pal[0];
+ for(let y=0;y<8;y++)for(let x=0;x<8;x++)if(B4[y*4+x]>=8)g.fillRect(x*4,y*4,4,4);
+ if(variant===1){g.fillStyle=pal[1];g.fillRect(0,13,32,6);}
+ else if(variant===2){g.fillStyle=pal[2];g.fillRect(10,0,12,32);}
+ else if(variant===3){g.fillStyle=pal[1];g.fillRect(0,0,32,5);g.fillRect(0,27,32,5);}
+ else{g.fillStyle=pal[0];g.globalAlpha=.7;g.fillRect(6,6,20,20);g.globalAlpha=1;}
+ return ctx.createPattern(c,'repeat');
+}
+function makeCar(i,isMain){
+ const pal=PALETTES[isMain?0:i%9];
+ const car={
+  id:i,name:NAMES[i%NAMES.length],isMain,pal,
+  x:W/2,y:H/2,angle:rnd()*TAU,vx:0,vy:0,r:16,
+  hp:100,maxHp:100,alive:true,respawnAt:0,flash:0,skid:false,smokeT:0,
+  weapon:'MG',fireCd:0,burst:0,burstT:0,
+  pattern:makeCarPattern(pal,isMain?4:(i*7)%4),
+  ringIdx:(rnd()*10|0),dir:rnd()<0.5?1:-1,
+  thinkT:rnd(),goal:null,target:null,
+  moveAcc:0,moveT:0,stuckN:0,revT:0,revDir:1,avoidT:0,avoidDir:1,orbit:rnd()<.5?1:-1,
+ };
+ car.gunAngle=car.angle;
+ return car;
+}
+function respawn(car){
+ let s=spawns[0];
+ for(let t=0;t<12;t++){
+  s=spawns[(Math.random()*spawns.length)|0];
+  let ok=true;
+  for(const o of cars)if(o.alive&&o!==car){const dx=o.x-s.x,dy=o.y-s.y;if(dx*dx+dy*dy<320*320){ok=false;break;}}
+  if(ok)break;
+ }
+ car.x=s.x;car.y=s.y;car.vx=car.vy=0;car.hp=car.maxHp;car.alive=true;
+ car.weapon='MG';car.burst=0;car.stuckN=0;car.target=null;car.flash=0;
+}
+function steerCar(car,throttle,steer,dt){
+ const fX=Math.cos(car.angle),fY=Math.sin(car.angle),nX=-fY,nY=fX;
+ let s=car.vx*fX+car.vy*fY,l=car.vx*nX+car.vy*nY;
+ if(throttle>0)s+=560*throttle*dt;else s+=480*throttle*dt;
+ s-=s*0.7*dt;
+ s=clamp(s,-170,340);
+ l*=Math.max(0,1-8*dt);
+ const sp=Math.hypot(s,l);
+ const ts=clamp(sp/150,0,1)*(s<0?-0.85:1);
+ car.angle+=steer*3.0*ts*dt;
+ car.vx=fX*s+nX*l;car.vy=fY*s+nY*l;
+ car.skid=Math.abs(l)>60||(throttle>0&&Math.abs(steer)>0.65&&sp>220)||(throttle<0&&sp>140);
+ car.x+=car.vx*dt;car.y+=car.vy*dt;
+}
+function updateCar(car,dt){
+ if(!car.alive){if(now>=car.respawnAt)respawn(car);return;}
+ car.fireCd-=dt;car.flash=Math.max(0,car.flash-dt);
+ const manual=car.isMain&&manualActive();
+ let ctl;
+ if(manual)ctl=playerControl(car);else ctl=aiControl(car,dt);
+ steerCar(car,ctl.throttle,ctl.steer,dt);
+ const da=angDiff(ctl.gunAngle,car.gunAngle);
+ car.gunAngle+=da*Math.min(1,dt*9);
+ tryFire(car,ctl.fire,dt);
+ collideWorld(car);
+ tireStamp(car,dt);
+ if(car.hp<45){car.smokeT-=dt;
+  if(car.smokeT<=0){car.smokeT=car.hp<20?0.06:0.16;
+   spawnSmoke(car.x,car.y);
+   if(car.hp<20&&Math.random()<0.5)spawnSpark(car.x,car.y,1);}}
+ collectPickups(car);
+ if(!manual){
+  car.moveAcc+=Math.hypot(car.vx,car.vy)*dt;car.moveT+=dt;
+  if(car.moveT>=1.2){
+   if(car.moveAcc<48)car.stuckN++;else car.stuckN=0;
+   car.moveAcc=0;car.moveT=0;
+   if(car.stuckN>=2&&car.revT<=0){car.revT=1.2;car.revDir=Math.random()<0.5?-1:1;}
+   if(car.stuckN>=6)destroy(car,null,'is stuck and self-destructs');
+  }
+ }
+}
+
+/* ==================== PLAYER CONTROLS ==================== */
+function playerControl(car){
+ let th=0,st=0;
+ if(keys['KeyW']||keys['ArrowUp'])th=1;
+ if(keys['KeyS']||keys['ArrowDown'])th=-1;
+ if(keys['KeyA']||keys['ArrowLeft'])st=-1;
+ if(keys['KeyD']||keys['ArrowRight'])st=1;
+ const wx=cam.x+(mouse.x-vw/2),wy=cam.y+(mouse.y-vh/2);
+ return{throttle:th,steer:st,gunAngle:Math.atan2(wy-car.y,wx-car.x),fire:keys['Space']||mouse.down};
+}
+
+/* ==================== AI & HIDDEN NAVIGATION ==================== */
+function aiControl(car,dt){
+ car.thinkT-=dt;
+ if(car.thinkT<=0){car.thinkT=0.25+Math.random()*0.45;aiThink(car);}
+ const px=car.x+Math.cos(car.angle)*85,py=car.y+Math.sin(car.angle)*85;
+ if(pointBlocked(px,py)){car.avoidT=0.6;car.avoidDir=Math.random()<0.5?-1:1;}
+ car.avoidT-=dt;car.revT-=dt;
+ let throttle,steer;
+ if(car.revT>0){throttle=-0.9;steer=car.revDir*0.9;}
+ else if(car.avoidT>0){throttle=0.85;steer=car.avoidDir*0.95;}
+ else{
+  if(!car.goal)car.goal=ring[car.ringIdx];
+  const dx=car.goal.x-car.x,dy=car.goal.y-car.y;
+  const d=Math.hypot(dx,dy)||1;
+  const da=angDiff(Math.atan2(dy,dx),car.angle);
+  if(d<130)car.goal=null;
+  steer=clamp(da*2.2,-1,1);
+  throttle=Math.abs(da)<1.15?1:0.5;
+ }
+ let fire=false;
+ if(car.target&&car.target.alive){
+  const t=car.target;
+  const gx=t.x+t.vx*0.35,gy=t.y+t.vy*0.35;
+  const gda=angDiff(Math.atan2(gy-car.y,gx-car.x),car.gunAngle);
+  const d=Math.hypot(t.x-car.x,t.y-car.y);
+  fire=d<(car.isMain?580:500)&&Math.abs(gda)<0.35;
+  return{throttle,steer,gunAngle:Math.atan2(gy-car.y,gx-car.x),fire};
+ }
+ return{throttle,steer,gunAngle:car.angle,fire:false};
+}
+function aiThink(car){
+ let best=car.isMain?620:540,tt=null;
+ for(const o of cars){if(o===car||!o.alive)continue;
+  const d=Math.hypot(o.x-car.x,o.y-car.y);if(d<best){best=d;tt=o;}}
+ car.target=tt;
+ if(car.hp<45){
+  const p=nearestPickup(car,900,'REPAIR');
+  if(p){car.goal={x:p.x,y:p.y};return;}
+ }
+ if(tt&&best<520){
+  const dx=tt.x-car.x,dy=tt.y-car.y,d=best||1;
+  const off=clamp(d-250,-130,340);
+  const tx=-dy/d,ty=dx/d;
+  car.goal={x:car.x+dx/d*off+tx*car.orbit*170,y:car.y+dy/d*off+ty*car.orbit*170};
+  return;
+ }
+ if(Math.random()<0.35){
+  const p=nearestPickup(car,750,null);
+  if(p){car.goal={x:p.x,y:p.y};return;}
+ }
+ car.ringIdx=(car.ringIdx+car.dir+10)%10;
+ car.goal=ring[car.ringIdx];
+}
+
+/* ==================== PICKUPS & WEAPONS ==================== */
+const WEAPONS={MG:{name:'MACHINE GUN'},BURST:{name:'BURST GUN'},CANNON:{name:'HEAVY CANNON'},ROCKET:{name:'ROCKETS'},MINE:{name:'MINE LAYER'}};
+const PICKUP_TYPES=['BURST','CANNON','ROCKET','MINE','REPAIR'];
+const pickups=[];
+function genPickups(){
+ let g=0;
+ while(pickups.length<16&&g<6000){g++;
+  const x=180+rnd()*(W-360),y=180+rnd()*(H-360);
+  if(!clearOfObstacles(x,y,70))continue;
+  let ok=true;
+  for(const p of pickups){const dx=p.x-x,dy=p.y-y;if(dx*dx+dy*dy<300*300){ok=false;break;}}
+  if(ok)pickups.push({x,y,type:PICKUP_TYPES[(rnd()*5)|0],timer:0,seed:rnd()*10});
+ }
+}
+function nearestPickup(car,maxD,type){
+ let bd=maxD*maxD,bp=null;
+ for(const p of pickups){if(p.timer>0)continue;if(type&&p.type!==type)continue;
+  const dx=p.x-car.x,dy=p.y-car.y,d2=dx*dx+dy*dy;if(d2<bd){bd=d2;bp=p;}}
+ return bp;
+}
+function collectPickups(car){
+ for(const p of pickups){
+  if(p.timer>0)continue;
+  const dx=p.x-car.x,dy=p.y-car.y;
+  if(dx*dx+dy*dy<28*28){
+   if(p.type==='REPAIR')car.hp=Math.min(car.maxHp,car.hp+45);
+   else{car.weapon=p.type;car.burst=0;}
+   p.timer=6;
+   spawnDust(car.x,car.y,4);
+   if(car.isMain)pushMsg(car.name+' picked up '+p.type);
+  }
+ }
+}
+
+/* ==================== PROJECTILES ==================== */
+const projs=[],mines=[];
+function spawnFlash(x,y,a){parts.push({k:'flash',x,y,vx:0,vy:0,life:0.06,life0:0.06,angle:a,seed:0});}
+function fireBullet(car,dmg,spd,spread){
+ const a=car.gunAngle+(Math.random()-.5)*spread;
+ const x=car.x+Math.cos(car.gunAngle)*24,y=car.y+Math.sin(car.gunAngle)*24;
+ projs.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,kind:'bullet',dmg,r:3,owner:car,life:1.3,boom:0,boomDmg:0});
+ car.vx-=Math.cos(car.gunAngle)*8;car.vy-=Math.sin(car.gunAngle)*8;
+ spawnFlash(x,y,car.gunAngle);
+}
+function fireShell(car){
+ const a=car.gunAngle,x=car.x+Math.cos(a)*24,y=car.y+Math.sin(a)*24;
+ projs.push({x,y,vx:Math.cos(a)*540,vy:Math.sin(a)*540,kind:'shell',dmg:20,r:6,owner:car,life:2,boom:50,boomDmg:10});
+ car.vx-=Math.cos(a)*30;car.vy-=Math.sin(a)*30;
+ spawnFlash(x,y,a);spawnDust(x,y,2);
+}
+function fireRocket(car){
+ const a=car.gunAngle,x=car.x+Math.cos(a)*26,y=car.y+Math.sin(a)*26;
+ projs.push({x,y,vx:Math.cos(a)*340,vy:Math.sin(a)*340,kind:'rocket',dmg:8,r:7,owner:car,life:3,boom:80,boomDmg:26});
+ car.vx-=Math.cos(a)*16;car.vy-=Math.sin(a)*16;
+ spawnFlash(x,y,a);spawnDust(x,y,3);
+}
+function dropMine(car){
+ const x=car.x-Math.cos(car.angle)*26,y=car.y-Math.sin(car.angle)*26;
+ mines.push({x,y,owner:car,armed:1.0,life:18,seed:Math.random()*10});
+ spawnDust(x,y,2);
+}
+function tryFire(car,fire,dt){
+ if(!fire||car.fireCd>0){
+  if(car.burst>0){
+   car.burstT-=dt;
+   if(car.burstT<=0){fireBullet(car,3,640,0.09);car.burst--;car.burstT=0.09;}
+   if(car.burst===0)car.fireCd=0.45;
+  }
+  return;
+ }
+ switch(car.weapon){
+  case 'MG':car.fireCd=0.09;fireBullet(car,4,740,0.06);break;
+  case 'BURST':car.burst=3;car.burstT=0;car.fireCd=0.9;break;
+  case 'CANNON':car.fireCd=0.6;fireShell(car);break;
+  case 'ROCKET':car.fireCd=0.85;fireRocket(car);break;
+  case 'MINE':car.fireCd=1.1;dropMine(car);break;
+ }
+}
+function updateProjs(dt){
+ for(let i=projs.length-1;i>=0;i--){
+  const p=projs[i];
+  p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;
+  if(p.kind==='rocket'&&(frameCount&1)===0)spawnSmoke(p.x,p.y);
+  let dead=p.life<=0||p.x<BORDER||p.y<BORDER||p.x>W-BORDER||p.y>H-BORDER;
+  if(!dead)for(const o of rects)if(p.x>o.x-p.r&&p.x<o.x+o.w+p.r&&p.y>o.y-p.r&&p.y<o.y+o.h+p.r){dead=true;break;}
+  if(!dead)for(const c of circles){const dx=p.x-c.x,dy=p.y-c.y,rr=c.r+p.r;
+   if(dx*dx+dy*dy<rr*rr){dead=true;break;}}
+  if(!dead)for(const car of cars){
+   if(!car.alive||car===p.owner)continue;
+   const dx=p.x-car.x,dy=p.y-car.y,rr=car.r+p.r;
+   if(dx*dx+dy*dy<rr*rr){
+    if(p.boom>0){damage(car,p.dmg,p.owner);explode(p.x,p.y,p.boom,p.boomDmg,p.owner,p.kind==='rocket'?1.6:0.9);}
+    else{damage(car,p.dmg,p.owner);spawnSpark(p.x,p.y,4);
+     car.vx+=p.vx*0.02;car.vy+=p.vy*0.02;}
+    dead=true;break;
+   }
+  }
+  if(dead){
+   if(p.boom>0&&p.life>0)explode(p.x,p.y,p.boom,p.boomDmg,p.owner,p.kind==='rocket'?1.6:0.9);
+   else{stampDot(p.x,p.y);spawnSpark(p.x,p.y,3);if(Math.random()<0.2)stampScorch(p.x,p.y,5);}
+   projs.splice(i,1);
+  }
+ }
+}
+function updateMines(dt){
+ for(let i=mines.length-1;i>=0;i--){
+  const m=mines[i];m.armed-=dt;m.life-=dt;
+  if(m.life<=0){mines.splice(i,1);continue;}
+  if(m.armed>0)continue;
+  for(const car of cars){
+   if(car===m.owner||!car.alive)continue;
+   const dx=car.x-m.x,dy=car.y-m.y;
+   if(dx*dx+dy*dy<30*30){mines.splice(i,1);explode(m.x,m.y,62,22,m.owner,1.4);break;}
+  }
+ }
+}
+
+/* ==================== COMBAT / DAMAGE ==================== */
+function damage(car,amt,src){
+ if(!car.alive)return;
+ car.hp-=amt;car.flash=0.12;
+ if(car.isMain)dmgFlash=Math.max(dmgFlash,clamp(amt/40,0.15,1));
+ if(car.hp<=0)destroy(car,src);
+}
+function destroy(car,src,note){
+ if(!car.alive)return;
+ car.alive=false;car.respawnAt=now+2.5;
+ explode(car.x,car.y,75,26,src,2);
+ stampWreck(car);
+ pushMsg(note?car.name+' '+note:(src?src.name+' scraps '+car.name:car.name+' wrecks itself'));
+ const d=Math.hypot(car.x-cam.x,car.y-cam.y);
+ if(car.isMain){shake=Math.min(26,shake+14);dmgFlash=1;}
+ else if(d<700)shake=Math.min(20,shake+(1-d/700)*8);
+}
+function explode(x,y,r,dmg,src,crater){
+ crater=crater||1;
+ for(const car of cars){
+  if(!car.alive)continue;
+  const dx=car.x-x,dy=car.y-y,d=Math.hypot(dx,dy);
+  if(d<r){const f=1-d/r;damage(car,dmg*f,src);
+   if(d>1){car.vx+=dx/d*300*f;car.vy+=dy/d*300*f;}}
+ }
+ for(let i=0;i<12;i++)spawnFire(x,y);
+ for(let i=0;i<7;i++)spawnSmoke(x,y);
+ for(let i=0;i<10;i++)spawnSpark(x,y,3);
+ spawnRing(x,y,r);spawnFlash(x,y,Math.random()*TAU);
+ stampCrater(x,y,r*0.6,crater);
+ const d=Math.hypot(x-cam.x,y-cam.y);
+ if(d<650)shake=Math.min(22,shake+(1-d/650)*10);
+}
+
+/* ==================== COLLISIONS ==================== */
+function wallHit(car,nx,ny,impact){
+ if(impact<140)return;
+ damage(car,(impact-140)*0.045,null);
+ spawnSpark(car.x-nx*car.r*.7,car.y-ny*car.r*.7,Math.min(10,impact/60));
+ if(impact>420)spawnSmoke(car.x,car.y);
+ if(car.isMain||Math.hypot(car.x-cam.x,car.y-cam.y)<500)shake=Math.min(18,shake+(impact-140)/90);
+}
+function collideWorld(car){
+ const r=car.r;
+ if(car.x<r+BORDER){car.x=r+BORDER;wallHit(car,-1,0,Math.abs(car.vx));car.vx*=-0.45;}
+ if(car.x>W-r-BORDER){car.x=W-r-BORDER;wallHit(car,1,0,Math.abs(car.vx));car.vx*=-0.45;}
+ if(car.y<r+BORDER){car.y=r+BORDER;wallHit(car,0,-1,Math.abs(car.vy));car.vy*=-0.45;}
+ if(car.y>H-r-BORDER){car.y=H-r-BORDER;wallHit(car,0,1,Math.abs(car.vy));car.vy*=-0.45;}
+ for(const o of rects){
+  const cx=clamp(car.x,o.x,o.x+o.w),cy=clamp(car.y,o.y,o.y+o.h);
+  let dx=car.x-cx,dy=car.y-cy,d=Math.hypot(dx,dy);
+  if(d<r){
+   if(d<0.001){dx=0;dy=-1;d=1;}else{dx/=d;dy/=d;}
+   car.x=cx+dx*r;car.y=cy+dy*r;
+   const vn=car.vx*dx+car.vy*dy;
+   if(vn<0){wallHit(car,dx,dy,-vn);car.vx-=1.5*vn*dx;car.vy-=1.5*vn*dy;}
+  }
+ }
+ for(const c of circles){
+  let dx=car.x-c.x,dy=car.y-c.y,d=Math.hypot(dx,dy);
+  const rr=r+c.r;
+  if(d<rr){
+   if(d<0.001){dx=0;dy=-1;d=1;}else{dx/=d;dy/=d;}
+   car.x=c.x+dx*rr;car.y=c.y+dy*rr;
+   const vn=car.vx*dx+car.vy*dy;
+   if(vn<0){wallHit(car,dx,dy,-vn);car.vx-=1.5*vn*dx;car.vy-=1.5*vn*dy;}
+  }
+ }
+}
+function collideCars(){
+ for(let i=0;i<cars.length;i++)for(let j=i+1;j<cars.length;j++){
+  const a=cars[i],b=cars[j];
+  if(!a.alive||!b.alive)continue;
+  let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
+  const rr=a.r+b.r;
+  if(d<rr){
+   if(d<0.001){dx=1;dy=0;d=1;}else{dx/=d;dy/=d;}
+   const push=(rr-d)/2;
+   a.x-=dx*push;a.y-=dy*push;b.x+=dx*push;b.y+=dy*push;
+   const vrel=(a.vx-b.vx)*dx+(a.vy-b.vy)*dy;
+   if(vrel>0){
+    const jimp=vrel*0.75;
+    a.vx-=jimp*dx;a.vy-=jimp*dy;b.vx+=jimp*dx;b.vy+=jimp*dy;
+    if(vrel>170){
+     const amt=(vrel-170)*0.04;
+     damage(a,amt,null);damage(b,amt,null);
+     spawnSpark((a.x+b.x)/2,(a.y+b.y)/2,Math.min(12,vrel/50));
+     if(vrel>400){spawnSmoke(a.x,a.y);
+      if(Math.hypot(a.x-cam.x,a.y-cam.y)<500)shake=Math.min(18,shake+vrel/120);}
+    }
+   }
+  }
+ }
+}
+
+/* ==================== EFFECTS ==================== */
+const parts=[];
+function addPart(o){o.life0=o.life;if(parts.length>900)parts.shift();parts.push(o);}
+function spawnSpark(x,y,n){for(let i=0;i<n;i++){
+ const a=Math.random()*TAU,s=120+Math.random()*260;
+ addPart({k:'spark',x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.15+Math.random()*0.2,seed:Math.random()});}}
+function spawnSmoke(x,y){addPart({k:'smoke',x:x+(Math.random()-.5)*14,y:y+(Math.random()-.5)*14,
+ vx:(Math.random()-.5)*30,vy:(Math.random()-.5)*30,life:0.8+Math.random()*0.8,seed:Math.random()});}
+function spawnDust(x,y,n){for(let i=0;i<n;i++){
+ const a=Math.random()*TAU,s=20+Math.random()*60;
+ addPart({k:'dust',x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.4+Math.random()*0.4,seed:Math.random()});}}
+function spawnFire(x,y){const a=Math.random()*TAU,s=40+Math.random()*200;
+ addPart({k:'fire',x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.2+Math.random()*0.25,seed:Math.random()});}
+function spawnRing(x,y,r){addPart({k:'ring',x,y,vx:0,vy:0,life:0.35,r,seed:0});}
+function updateParts(dt){
+ for(let i=parts.length-1;i>=0;i--){
+  const p=parts[i];p.life-=dt;
+  if(p.life<=0){parts.splice(i,1);continue;}
+  p.x+=p.vx*dt;p.y+=p.vy*dt;
+  if(p.k==='smoke'){p.vx*=Math.pow(0.3,dt);p.vy*=Math.pow(0.3,dt);}
+  if(p.k==='spark'){p.vx*=Math.pow(0.05,dt);p.vy*=Math.pow(0.05,dt);}
+ }
+}
+
+/* ==================== PERSISTENT WORLD DAMAGE ==================== */
+function stampRect(px,py,w,h,ang,alpha){
+ wctx.save();wctx.translate(px,py);wctx.rotate(ang);
+ wctx.globalAlpha=alpha;wctx.fillStyle=inkDark;
+ wctx.fillRect(-w/2,-h/2,w,h);wctx.restore();
+}
+function tireStamp(car){
+ const sp=Math.hypot(car.vx,car.vy);
+ if(sp<30)return;
+ const ca=Math.cos(car.angle),sa=Math.sin(car.angle);
+ const stamp=(ox,oy,wd,al)=>stampRect(car.x+ox*ca-oy*sa,car.y+ox*sa+oy*ca,wd,3,car.angle,al);
+ if(car.skid){stamp(-13,-8,8,0.35);stamp(-13,8,8,0.35);stamp(13,-8,6,0.2);stamp(13,8,6,0.2);}
+ else if(Math.random()<0.28){stamp(-13,-8,5,0.08);stamp(-13,8,5,0.08);}
+}
+function stampDot(x,y){
+ wctx.globalAlpha=0.6;wctx.fillStyle=inkDark;
+ wctx.fillRect(x-1.5,y-1.5,3,3);wctx.globalAlpha=1;
+}
+function stampScorch(x,y,r){
+ wctx.globalAlpha=0.5;wctx.fillStyle=inkDark;
+ for(let i=0;i<3;i++){const a=Math.random()*TAU,d=Math.random()*r*0.4;
+  wctx.beginPath();wctx.arc(x+Math.cos(a)*d,y+Math.sin(a)*d,r*(0.5+Math.random()*0.5),0,TAU);wctx.fill();}
+ wctx.globalAlpha=1;
+}
+function stampCrater(x,y,r,strength){
+ r=Math.min(r,90);
+ wctx.fillStyle=inkDark;
+ wctx.globalAlpha=0.7*Math.min(strength,2)*0.7;
+ wctx.beginPath();wctx.arc(x,y,r,0,TAU);wctx.fill();
+ wctx.globalAlpha=0.9;
+ wctx.beginPath();wctx.arc(x,y,r*0.45,0,TAU);wctx.fill();
+ wctx.globalAlpha=0.5;
+ for(let i=0;i<8;i++){const a=Math.random()*TAU,d=r*(0.8+Math.random()*0.8);
+  wctx.fillRect(x+Math.cos(a)*d-2,y+Math.sin(a)*d-2,4,4);}
+ wctx.globalAlpha=1;
+}
+function stampWreck(car){
+ const x=car.x,y=car.y;
+ wctx.save();wctx.translate(x,y);wctx.rotate(car.angle);
+ wctx.globalAlpha=0.85;wctx.fillStyle=inkDark;
+ wctx.fillRect(-24,-14,48,28);
+ wctx.globalAlpha=0.5;
+ for(let i=0;i<10;i++)wctx.fillRect(-30+Math.random()*60,-20+Math.random()*40,3,3);
+ wctx.restore();
+ wctx.globalAlpha=0.4;wctx.fillStyle=inkDark;
+ wctx.beginPath();wctx.arc(x,y,34,0,TAU);wctx.fill();
+ wctx.globalAlpha=0.35;wctx.fillStyle=inkRust;
+ wctx.beginPath();wctx.arc(x+(Math.random()-.5)*30,y+(Math.random()-.5)*30,10,0,TAU);wctx.fill();
+ wctx.globalAlpha=1;
+}
+
+/* ==================== CAMERA ==================== */
+const cam={x:W/2,y:H/2,tX:W/2,tY:H/2,shakeX:0,shakeY:0};
+let shake=0;
+function updateCam(dt){
+ if(main.alive){cam.tX=main.x+main.vx*0.22;cam.tY=main.y+main.vy*0.22;}
+ const k=1-Math.pow(0.0015,dt);
+ cam.x=lerp(cam.x,cam.tX,k);cam.y=lerp(cam.y,cam.tY,k);
+ cam.x=clamp(cam.x,vw/2,W-vw/2);cam.y=clamp(cam.y,vh/2,H-vh/2);
+ shake*=Math.pow(0.02,dt);
+ cam.shakeX=(Math.random()-.5)*shake;cam.shakeY=(Math.random()-.5)*shake;
+}
+
+/* ==================== UI ==================== */
+const hpEl=document.getElementById('hp'),wepEl=document.getElementById('wep'),
+ drvEl=document.getElementById('drv'),feedEl=document.getElementById('feed'),
+ dmgEl=document.getElementById('dmg');
+let dmgFlash=0;
+const feed=[];
+function pushMsg(m){feed.push({m,t:now});while(feed.length>5)feed.shift();}
+function updateHUD(){
+ const hp=clamp(main.hp/main.maxHp,0,1)*100;
+ hpEl.style.width=hp+'%';
+ hpEl.style.background=hp<35?'#c25b3a':'#efe4c8';
+ wepEl.textContent=WEAPONS[main.weapon].name;
+ drvEl.textContent=manualActive()?'YOU':'AUTO';
+ dmgFlash=Math.max(0,dmgFlash-0.02);
+ dmgEl.style.opacity=dmgFlash*0.9;
+ feedEl.innerHTML=feed.filter(f=>now-f.t<4)
+  .map(f=>'<div class="msg" style="opacity:'+clamp(1-(now-f.t)/4,0.25,1)+'">'+f.m+'</div>').join('');
+}
+
+/* ==================== RENDERING ==================== */
+function drawCar(car){
+ ctx.save();ctx.translate(car.x,car.y);
+ ctx.fillStyle='rgba(0,0,0,0.35)';ctx.fillRect(-22,-10,48,26);
+ ctx.rotate(car.angle);
+ if(car.isMain){ctx.fillStyle='#f2e9d8';ctx.fillRect(-25,-14,50,28);}
+ ctx.fillStyle=car.pattern;ctx.fillRect(-24,-13,48,26);
+ ctx.strokeStyle='#120c06';ctx.lineWidth=2;ctx.strokeRect(-24,-13,48,26);
+ if(car.isMain){ctx.fillStyle='#0b2a2e';ctx.fillRect(-24,-4,48,8);}
+ ctx.fillStyle='rgba(10,6,3,0.55)';ctx.fillRect(-8,-9,18,18);
+ ctx.fillStyle='rgba(10,6,3,0.8)';ctx.fillRect(-11,-9,4,18);
+ if(car.id%3===0){ctx.fillStyle=car.pal[2];ctx.fillRect(-24,-13,5,26);}
+ ctx.save();ctx.rotate(car.gunAngle-car.angle);
+ ctx.fillStyle='#d8cdb2';ctx.fillRect(2,-3,24,6);
+ ctx.strokeStyle='#120c06';ctx.lineWidth=1.5;ctx.strokeRect(2,-3,24,6);
+ ctx.fillStyle=car.isMain?'#5ff0dd':'#e9dfc6';
+ ctx.beginPath();ctx.arc(0,0,6,0,TAU);ctx.fill();ctx.stroke();
+ ctx.restore();
+ if(car.flash>0){ctx.globalAlpha=clamp(car.flash*7,0,0.9);
+  ctx.fillStyle='#fff6e2';ctx.fillRect(-24,-13,48,26);ctx.globalAlpha=1;}
+ ctx.restore();
+}
+function drawPickup(p){
+ ctx.save();
+ ctx.translate(p.x,p.y+Math.sin(now*3+p.seed)*2);
+ ctx.globalAlpha=0.75+0.25*Math.sin(now*5+p.seed);
+ ctx.fillStyle='rgba(10,6,3,0.75)';ctx.fillRect(-11,-11,22,22);
+ ctx.strokeStyle='#e9dfc6';ctx.lineWidth=2;ctx.strokeRect(-10,-10,20,20);
+ ctx.fillStyle='#e9dfc6';
+ if(p.type==='BURST'){ctx.fillRect(-7,-2,4,4);ctx.fillRect(-2,-2,4,4);ctx.fillRect(3,-2,4,4);}
+ else if(p.type==='CANNON'){ctx.fillRect(-6,-6,12,12);ctx.fillStyle='#171008';ctx.fillRect(-3,-3,6,6);}
+ else if(p.type==='ROCKET'){ctx.beginPath();ctx.moveTo(7,0);ctx.lineTo(-6,-6);ctx.lineTo(-3,0);ctx.lineTo(-6,6);ctx.closePath();ctx.fill();}
+ else if(p.type==='MINE'){ctx.beginPath();ctx.arc(0,0,6,0,TAU);ctx.stroke();ctx.fillRect(-1.5,-1.5,3,3);}
+ else{ctx.fillStyle='#c25b3a';ctx.fillRect(-2.5,-7,5,14);ctx.fillRect(-7,-2.5,14,5);}
+ ctx.restore();
+}
+function drawProj(p){
+ ctx.save();ctx.translate(p.x,p.y);ctx.rotate(Math.atan2(p.vy,p.vx));
+ if(p.kind==='bullet'){ctx.fillStyle='#f2e9d8';ctx.fillRect(-4,-1.5,8,3);}
+ else if(p.kind==='shell'){ctx.fillStyle='#c25b3a';ctx.fillRect(-4,-4,8,8);
+  ctx.fillStyle='#f2e9d8';ctx.fillRect(-1.5,-1.5,3,3);}
+ else{ctx.fillStyle='#e9dfc6';ctx.fillRect(-7,-3,14,6);
+  ctx.fillStyle='#120c06';ctx.fillRect(3,-3,4,6);
+  ctx.strokeStyle='#120c06';ctx.lineWidth=1;ctx.strokeRect(-7,-3,14,6);}
+ ctx.restore();
+}
+function drawPart(p){
+ const k=1-p.life/p.life0;
+ ctx.save();ctx.translate(p.x,p.y);
+ if(p.k==='spark'){
+  ctx.strokeStyle=p.seed<0.35?'#c25b3a':'#f2e9d8';
+  ctx.globalAlpha=clamp(1-k,0,1);ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(-p.vx*0.025,-p.vy*0.025);ctx.stroke();
+ }else if(p.k==='smoke'){
+  ctx.globalAlpha=(1-k)*0.4;ctx.fillStyle=pInkDark;
+  ctx.beginPath();ctx.arc(0,0,6+k*16,0,TAU);ctx.fill();
+ }else if(p.k==='dust'){
+  ctx.globalAlpha=(1-k)*0.35;ctx.fillStyle=pInkLight;
+  ctx.beginPath();ctx.arc(0,0,3+k*10,0,TAU);ctx.fill();
+ }else if(p.k==='fire'){
+  ctx.globalAlpha=clamp(1-k,0,1);
+  ctx.fillStyle=p.seed<0.3?'#c25b3a':'#f7edd2';
+  const s=5*(1-k)+2;
+  ctx.fillRect(-s/2,-s/2,s,s);
+ }else if(p.k==='ring'){
+  ctx.globalAlpha=(1-k)*0.8;ctx.strokeStyle='#f2e9d8';ctx.lineWidth=3;
+  ctx.beginPath();ctx.arc(0,0,4+k*p.r,0,TAU);ctx.stroke();
+ }else if(p.k==='flash'){
+  ctx.globalAlpha=1-k;ctx.strokeStyle='#fff6e2';ctx.lineWidth=2;
+  ctx.rotate(p.angle||0);
+  ctx.beginPath();ctx.moveTo(-8,0);ctx.lineTo(8,0);ctx.moveTo(0,-6);ctx.lineTo(0,6);ctx.stroke();
+ }
+ ctx.restore();
+}
+function draw(){
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.fillStyle='#14100a';ctx.fillRect(0,0,vw,vh);
+ const zoom=1;
+ ctx.setTransform(dpr*zoom,0,0,dpr*zoom,
+  dpr*(vw/2-(cam.x+cam.shakeX)*zoom),dpr*(vh/2-(cam.y+cam.shakeY)*zoom));
+ ctx.drawImage(worldCv,0,0);
+ for(const m of mines){
+  ctx.save();ctx.translate(m.x,m.y);
+  ctx.fillStyle='#171008';ctx.beginPath();ctx.arc(0,0,7,0,TAU);ctx.fill();
+  ctx.strokeStyle='#e9dfc6';ctx.lineWidth=1.5;ctx.stroke();
+  if(m.armed<=0&&Math.sin(now*10+m.seed)>0){
+   ctx.fillStyle='#c25b3a';ctx.beginPath();ctx.arc(0,0,2.5,0,TAU);ctx.fill();
+  }else{
+   ctx.fillStyle='#e9dfc6';ctx.beginPath();ctx.arc(0,0,1.5,0,TAU);ctx.fill();
+  }
+  ctx.restore();
+ }
+ for(const p of pickups)if(p.timer<=0)drawPickup(p);
+ for(const car of cars)if(car.alive)drawCar(car);
+ for(const p of projs)drawProj(p);
+ for(const p of parts)drawPart(p);
+}
+
+/* ==================== INIT & MAIN LOOP ==================== */
+buildGround();
+genObstacles();
+drawObstacles();
+genSpawns();
+genPickups();
+const main=makeCar(0,true);
+cars.push(main);
+for(let i=1;i<9;i++)cars.push(makeCar(i,false));
+for(let i=0;i<cars.length&&i<spawns.length;i++){
+ cars[i].x=spawns[i].x;cars[i].y=spawns[i].y;
+}
+cam.x=main.x;cam.y=main.y;cam.tX=main.x;cam.tY=main.y;
+pushMsg('autopilot engaged · grab the wheel any time');
+
+let last=performance.now();
+function frame(tms){
+ requestAnimationFrame(frame);
+ let dt=(tms-last)/1000;last=tms;
+ dt=clamp(dt,0,0.05);
+ now+=dt;frameCount++;
+ for(const car of cars)updateCar(car,dt);
+ collideCars();
+ updateProjs(dt);
+ updateMines(dt);
+ for(const p of pickups)if(p.timer>0)p.timer-=dt;
+ updateParts(dt);
+ updateCam(dt);
+ updateHUD();
+ draw();
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
