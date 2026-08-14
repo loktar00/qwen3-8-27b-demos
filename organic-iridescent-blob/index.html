@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prism Blob — Raymarched Iridescent SDF · WebGL2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#e8ecff;
+    --dim:#8b93b8;
+    --panel:#0c0f1f;
+    --line:rgba(140,150,255,0.14);
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; }
+  body{
+    background:#05060f;
+    color:var(--ink);
+    font-family:"Space Grotesk", system-ui, sans-serif;
+    overflow:hidden;
+    display:flex;
+    flex-direction:column;
+  }
+  header{
+    display:flex;
+    align-items:baseline;
+    gap:16px;
+    padding:14px 22px 12px;
+    border-bottom:1px solid var(--line);
+    background:linear-gradient(90deg,#070918 0%,#0d0a20 55%,#12081f 100%);
+    flex:0 0 auto;
+  }
+  h1{
+    font-size:20px;
+    font-weight:700;
+    letter-spacing:0.14em;
+    background:linear-gradient(90deg,#39d8ff 0%,#c25cff 35%,#ff5fa8 60%,#ffc24d 85%,#3dffa8 100%);
+    -webkit-background-clip:text;
+    background-clip:text;
+    color:transparent;
+    white-space:nowrap;
+  }
+  .sub{
+    font-size:12px;
+    color:var(--dim);
+    letter-spacing:0.06em;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  main{
+    flex:1 1 auto;
+    min-height:0;
+    display:grid;
+    grid-template-columns:1fr min(460px, 40vw);
+  }
+  #stage{
+    position:relative;
+    min-width:0;
+    min-height:0;
+    background:#04050e;
+  }
+  #gl{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    display:block;
+  }
+  #badge{
+    position:absolute;
+    left:14px;
+    bottom:12px;
+    font-size:10px;
+    letter-spacing:0.22em;
+    color:rgba(180,195,255,0.5);
+    text-transform:uppercase;
+    pointer-events:none;
+    user-select:none;
+  }
+  #fallback{
+    position:absolute;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    padding:24px;
+    color:var(--dim);
+    font-size:14px;
+    line-height:1.6;
+  }
+  #fallback strong{ color:var(--ink); display:block; margin-bottom:8px; font-size:16px; }
+  aside{
+    border-left:1px solid var(--line);
+    background:var(--panel);
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+  }
+  aside .panel-head{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:12px 18px;
+    border-bottom:1px solid var(--line);
+    flex:0 0 auto;
+  }
+  aside h2{
+    font-family:"JetBrains Mono", monospace;
+    font-size:12px;
+    font-weight:500;
+    letter-spacing:0.08em;
+    color:#9fd0ff;
+  }
+  aside .tag{
+    font-size:10px;
+    letter-spacing:0.18em;
+    text-transform:uppercase;
+    color:var(--dim);
+  }
+  pre{
+    flex:1 1 auto;
+    overflow:auto;
+    padding:16px 18px 28px;
+    font-family:"JetBrains Mono", monospace;
+    font-size:11.5px;
+    line-height:1.62;
+    color:#c9d4f5;
+    tab-size:2;
+  }
+  pre .c{ color:#7f8db0; font-style:italic; }
+  pre::-webkit-scrollbar{ width:10px; height:10px; }
+  pre::-webkit-scrollbar-thumb{ background:#232a4d; border-radius:6px; }
+  pre::-webkit-scrollbar-track{ background:transparent; }
+  @media (max-width: 940px){
+    body{ overflow:auto; }
+    main{ grid-template-columns:1fr; grid-template-rows: 58vh auto; }
+    aside{ border-left:none; border-top:1px solid var(--line); max-height:52vh; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>PRISM BLOB</h1>
+  <div class="sub">raymarched SDF &middot; WebGL2 fragment shader &middot; one orbiting light &middot; layered-noise organic deformation</div>
+</header>
+
+<main>
+  <section id="stage">
+    <canvas id="gl"></canvas>
+    <div id="fallback" hidden>
+      <div>
+        <strong id="fbtitle">Renderer unavailable</strong>
+        <span id="fbmsg"></span>
+      </div>
+    </div>
+    <div id="badge">generative &middot; procedural &middot; no textures</div>
+  </section>
+
+  <aside>
+    <div class="panel-head">
+      <h2>fragment.glsl</h2>
+      <span class="tag">live source</span>
+    </div>
+    <pre id="src"></pre>
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ */
+/*  Fragment shader — full source is also shown in the side panel.     */
+/* ------------------------------------------------------------------ */
+const FRAG = `#version 300 es
+precision highp float;
+
+uniform vec2  uRes;   // canvas size in physical (device) pixels
+uniform float uTime;  // seconds since first frame
+out vec4 outColor;
+
+#define TAU 6.283185307179586
+
+/* ---------------------------------------------------------------
+   Value-noise helpers: a 2D hash -> smooth value noise -> 4-tap
+   fractal Brownian motion. The blob's deformation and its color
+   flow are both built from these.
+   --------------------------------------------------------------- */
+float hash12(vec2 p){
+  p = fract(p * vec2(123.34, 345.45));
+  p += dot(p, p + 34.345);
+  return fract(p.x * p.y);
+}
+float vnoise(vec2 p){
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);            // smoothstep interpolation
+  return mix(mix(hash12(i),                hash12(i + vec2(1.0, 0.0)), u.x),
+             mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p){
+  float amp = 0.5;
+  float sum = 0.0;
+  for(int i = 0; i < 4; i++){                   // 4 octaves
+    sum += amp * vnoise(p);
+    p = p * 2.03 + 17.13;
+    amp *= 0.5;
+  }
+  return sum;
+}
+
+/* ---------------------------------------------------------------
+   Signed distance field of the blob: a sphere at the origin,
+   deformed by three rotated slices of fbm plus two layered sine
+   terms. Sampling the fbm on three different 2D projections of
+   the 3D point (yz, zx, xy) gives a genuinely 3D, non-planar
+   wobble; the sines add finer biologically fluid "muscle"
+   undulations. The whole shape also breathes asymmetrically.
+   This is a continuous, non-linear deformation — never a simple
+   translation.
+   --------------------------------------------------------------- */
+float map(vec3 p){
+  float t = uTime * 0.55;
+  float r = length(p);
+  float d = r - 1.15;                            // base sphere radius
+
+  float n1 = fbm(p.yz * 1.4 + t * 0.70) - 0.5;
+  float n2 = fbm(p.zx * 1.7 - t * 0.50) - 0.5;
+  float n3 = fbm(p.xy * 1.5 + t * 0.60) - 0.5;
+  float disp = 0.34 * (n1 + 0.8 * n2 + 0.6 * n3);
+  disp += 0.10 * sin(p.x * 3.1 + t * 1.2)
+                 * sin(p.y * 2.7 - t * 0.8)
+                 * sin(p.z * 3.4 + t * 1.0);
+  disp += 0.05 * sin(r * 5.0 - t * 2.0);         // radial ripple
+
+  d *= 1.0 + 0.05 * sin(t * 0.7 + p.y * 2.0);    // slow asymmetric breathing
+  return d + disp;
+}
+
+/* ---------------------------------------------------------------
+   Iridescent palette: a sum of two cosine harmonics (IQ-style)
+   tuned to sweep across electric cyan, saturated magenta, violet,
+   coral, warm gold, emerald and deep blue. One scalar "flow"
+   value drives the whole journey.
+   --------------------------------------------------------------- */
+vec3 palette(float t){
+  vec3 c1 = 0.5 + 0.5 * cos(TAU * (t     + vec3(0.00, 0.33, 0.67)));
+  vec3 c2 = 0.5 + 0.5 * cos(TAU * (2.0 * t + vec3(0.10, 0.45, 0.80)));
+  return c1 * 0.62 + c2 * 0.38;
+}
+
+/* Complementary deep-space gradient background with a faint
+   drifting aurora, a colored ground shadow and a soft colored
+   spill used for the blob's off-surface glow. */
+vec3 background(vec2 uv, float spill){
+  vec3 top = vec3(0.020, 0.030, 0.090);
+  vec3 bot = vec3(0.085, 0.028, 0.150);
+  vec3 bg = mix(bot, top, smoothstep(-1.25, 1.25, uv.y));
+
+  bg += palette(uTime * 0.02 + uv.y * 0.40 + uv.x * 0.10)
+        * 0.050 * (0.6 + 0.4 * sin(uv.x * 2.0 + uTime * 0.20));
+
+  float sh = exp(-2.5 * dot(uv - vec2(0.0, -0.92), uv - vec2(0.0, -0.92)));
+  bg += vec3(0.24, 0.05, 0.42) * sh * 0.55;      // violet ground shadow
+
+  bg += palette(uTime * 0.05) * spill;           // atmospheric color spill
+  return bg;
+}
+
+void main(){
+  vec2 uv = (2.0 * gl_FragCoord.xy - uRes) / uRes.y;
+
+  /* Camera: slow orbital drift around the blob. */
+  float ct = uTime * 0.12;
+  vec3 ro = vec3(sin(ct) * 0.55, 0.25 * sin(uTime * 0.20), 4.15);
+  vec3 ta = vec3(0.0, 0.05, 0.0);
+  vec3 fw = normalize(ta - ro);
+  vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
+  vec3 up = cross(rt, fw);
+  vec3 rd = normalize(uv.x * rt + uv.y * up + 1.55 * fw);
+
+  /* ----------------------------------------------------------------
+     Raymarch loop. Three tuned constants govern it:
+
+     MAX_STEPS (96): a hard cap on the number of adaptive steps.
+       The march is early-terminated as soon as the surface is
+       found, but this cap guarantees the loop always finishes in
+       bounded time when the ray misses or wanders.
+
+     EPS (0.0012): the early-exit surface-distance threshold.
+       When the sampled SDF value drops below EPS we consider the
+       ray to have hit the surface and stop; a larger value would
+       stop too early and leave a visible gap, a smaller one costs
+       extra steps for no visual gain.
+
+     FAR (22.0): the far-distance termination condition. If the
+       accumulated ray length t exceeds FAR, the ray has escaped
+       the scene (or left the blob behind us) and is treated as a
+       miss, so we break out of the loop.
+     ---------------------------------------------------------------- */
+  float t = 0.0;
+  bool  hit = false;
+  float minD = 1e3;
+  const int   MAX_STEPS = 96;
+  const float EPS       = 0.0012;
+  const float FAR       = 22.0;
+
+  for(int i = 0; i < MAX_STEPS; i++){
+    vec3  p = ro + rd * t;
+    float d = map(p);
+    minD = min(minD, d);          // track closest approach for glow
+    if(d < EPS){ hit = true; break; }   // surface reached -> early exit
+    t += d * 0.85;                // conservative step (SDF safety margin)
+    if(t > FAR) break;                 // ray escaped -> terminate
+  }
+
+  float spill = 0.16 * exp(-minD * 1.4);   // soft colored halo near silhouette
+  vec3 col;
+
+  if(hit){
+    vec3 p = ro + rd * t;
+
+    /* --------------------------------------------------------------
+       Surface normal via finite differences. We sample the SDF at
+       the four vertices of a small regular tetrahedron centered on
+       p (offset vectors e2.xyy, e2.yyx, e2.yxy, e2.xxx where
+       e2 = (1,-1)) and sum each distance weighted by its offset.
+       This is the classic 4-tap tetrahedron finite-difference
+       gradient: the SDF's gradient points perpendicular to the
+       surface, so the normalized weighted sum is the surface
+       normal — cheaper than a 6-tap central-difference scheme and
+       exact up to O(e) for a smooth SDF.
+       -------------------------------------------------------------- */
+    float e  = 0.0015;
+    vec2  e2 = vec2(1.0, -1.0);
+    vec3  N = normalize(
+        e2.xyy * map(p + e2.xyy * e)
+      + e2.yyx * map(p + e2.yyx * e)
+      + e2.yxy * map(p + e2.yxy * e)
+      + e2.xxx * map(p + e2.xxx * e));
+
+    /* Color flow: fbm sampled on rotating planes of the surface
+       point, plus a curvature proxy (how much the local normal
+       deviates from the radial direction) so crests and valleys
+       carry different hues. */
+    float curve = 1.0 - clamp(dot(N, normalize(p)), 0.0, 1.0);
+    float flow  =  fbm(p.yz * 2.2 + p.x      + uTime * 0.15)
+                 + 0.6 * fbm(p.zx * 3.1           - uTime * 0.12)
+                 + 0.35 * fbm(p.xy * 2.6          + uTime * 0.10)
+                 + 0.5 * curve;
+    vec3 base = palette(0.15 * flow + p.y * 0.18 + p.x * 0.10 + uTime * 0.045);
+
+    /* One moving light source: an orbiting point light. */
+    vec3  Lp   = vec3(cos(uTime * 0.50) * 3.2,
+                      1.6 + sin(uTime * 0.33) * 1.2,
+                      sin(uTime * 0.50) * 3.2 + 1.0);
+    vec3  Ld   = Lp - p;
+    float ldist = length(Ld);
+    vec3  L  = Ld / ldist;
+    vec3  V  = -rd;
+    vec3  H  = normalize(L + V);
+
+    float ndl = clamp(dot(N, L), 0.0, 1.0);
+    float ndv = clamp(dot(N, V), 0.0, 1.0);
+    float ndh = clamp(dot(N, H), 0.0, 1.0);
+    float atten = 1.0 / (1.0 + 0.06 * ldist * ldist);
+
+    /* Colorful specular: two lobe powers, tinted by a hue offset
+       from the base so highlights shift through the palette. */
+    float spec = pow(ndh, 90.0) + 0.35 * pow(ndh, 24.0);
+    vec3  specCol = palette(0.15 * flow + 0.42 + uTime * 0.05);
+
+    /* Fresnel rim read as subsurface light leaking through the
+       thin edges of the body, in a complementary hue. */
+    float fres = pow(1.0 - ndv, 3.0);
+    vec3  rimCol = palette(0.15 * flow + 0.72 + uTime * 0.05);
+
+    float sss = pow(clamp(dot(N, -L) * 0.5 + 0.5, 0.0, 1.0), 2.0) * 0.35;
+    vec3  sssCol = palette(0.15 * flow + 0.55);
+
+    float ao = 1.0 - 0.5 * fbm(p.yz * 4.0 + uTime * 0.10);   // cheap contact AO
+
+    col = base * (0.18 + 0.85 * ndl * atten)          // readable key light
+        + specCol * spec * (0.5 + 0.5 * ndl) * 1.4    // iridescent specular
+        + rimCol  * fres * (0.55 + 0.35 * atten)      // rim / fake subsurface
+        + sssCol  * sss * (0.6 + 0.6 * ndl);          // transmitted glow
+    col *= 0.75 + 0.35 * ao;
+
+    col += palette(0.15 * flow + 0.3) * spill * 0.5;  // silhouette spill
+    col = col / (1.0 + col);                          // soft tonemap
+    col = pow(col, vec3(0.9));
+  } else {
+    col = background(uv, spill);
+  }
+
+  /* Restrained animated film grain. */
+  float g = hash12(gl_FragCoord.xy + vec2(fract(uTime) * 191.0,
+                                          fract(uTime * 0.7) * 137.0));
+  col += (g - 0.5) * 0.02;
+
+  /* Gentle vignette to focus attention on the blob. */
+  vec2 vuv = gl_FragCoord.xy / uRes;
+  col *= 0.72 + 0.28 * pow(16.0 * vuv.x * vuv.y * (1.0 - vuv.x) * (1.0 - vuv.y), 0.30);
+
+  outColor = vec4(col, 1.0);
+}
+`;
+
+const VERT = `#version 300 es
+layout(location = 0) in vec2 aPos;
+void main(){
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+/* ---------------- Present the shader source in the panel -------- */
+(function presentSource(){
+  const pre = document.getElementById("src");
+  const esc = FRAG
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  pre.innerHTML = esc.replace(/(\/\/[^\n]*)/g, '<span class="c">$1</span>');
+})();
+
+/* ---------------- WebGL2 setup, defensive ------------------------ */
+const canvas   = document.getElementById("gl");
+const fallback = document.getElementById("fallback");
+const fbTitle  = document.getElementById("fbtitle");
+const fbMsg    = document.getElementById("fbmsg");
+
+function fail(title, msg){
+  fbTitle.textContent = title;
+  fbMsg.textContent = msg;
+  fallback.hidden = false;
+  canvas.style.display = "none";
+}
+
+const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
+if(!gl){
+  fail("WebGL2 unavailable",
+    "This exhibit renders with a WebGL2 raymarcher, which your browser or GPU did not provide. Try a current desktop or mobile browser with hardware acceleration enabled.");
+  throw new Error("WebGL2 not available");
+}
+
+function compile(type, src){
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+    const log = gl.getShaderInfoLog(sh);
+    gl.deleteShader(sh);
+    throw new Error(log || "shader compile failed");
+  }
+  return sh;
+}
+
+let program;
+try{
+  const vs = compile(gl.VERTEX_SHADER, VERT);
+  const fs = compile(gl.FRAGMENT_SHADER, FRAG);
+  program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if(!gl.getProgramParameter(program, gl.LINK_STATUS)){
+    throw new Error(gl.getProgramInfoLog(program) || "link failed");
+  }
+}catch(err){
+  fail("Shader error", String(err.message || err));
+  throw err;
+}
+
+/* Fullscreen triangle */
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const uRes  = gl.getUniformLocation(program, "uRes");
+const uTime = gl.getUniformLocation(program, "uTime");
+
+/* ---------------- Sizing: DPR capped for reliability ------------- */
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 2); // cap at 2x
+  const w = Math.max(1, Math.floor(canvas.clientWidth  * dpr));
+  const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if(canvas.width !== w || canvas.height !== h){
+    canvas.width = w;
+    canvas.height = h;
+    gl.viewport(0, 0, w, h);
+  }
+}
+window.addEventListener("resize", resize);
+if(window.ResizeObserver){
+  new ResizeObserver(resize).observe(document.getElementById("stage"));
+}
+resize();
+
+/* ---------------- Animation loop --------------------------------- */
+const t0 = performance.now();
+function frame(now){
+  resize();
+  gl.useProgram(program);
+  gl.bindVertexArray(vao);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uTime, (now - t0) * 0.001);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

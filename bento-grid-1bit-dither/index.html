@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark light">
+<title>MONOBENTO — 1-bit dithered bento</title>
+<style>
+/* ============ TOKENS ============ */
+:root{
+  --bg:#0e0e0e;
+  --ink:#f4f4f0;
+  --gap:14px;
+  --row:88px;
+  --mono:ui-monospace,"SF Mono","Cascadia Mono","Roboto Mono",Menlo,Consolas,monospace;
+  --disp:Impact,Haettenschweiler,"Franklin Gothic Bold","Arial Black",sans-serif;
+}
+html.light{ --bg:#f1f0ea; --ink:#131313; }
+
+*{ box-sizing:border-box; margin:0; padding:0; }
+
+::selection{ background:var(--ink); color:var(--bg); }
+
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--mono);
+  font-size:14px;
+  line-height:1.6;
+  min-height:100vh;
+  padding:clamp(14px,3vw,34px);
+  transition:background-color .2s steps(2), color .2s steps(2);
+  overflow-x:hidden;
+}
+/* ambient ordered-dither grain */
+body::before{
+  content:"";
+  position:fixed; inset:0; z-index:60;
+  pointer-events:none;
+  background:repeating-conic-gradient(var(--ink) 0 25%, transparent 0 50%) 0 0 / 4px 4px;
+  opacity:.045;
+  animation:grain 1.4s steps(4) infinite;
+}
+@keyframes grain{ to{ background-position:8px 0; } }
+
+:focus-visible{ outline:2px dashed var(--ink); outline-offset:3px; }
+
+/* ============ MASTHEAD BAR ============ */
+.bar{
+  display:flex; justify-content:space-between; align-items:baseline;
+  border-bottom:2px solid var(--ink);
+  padding-bottom:12px; margin-bottom:16px;
+  gap:16px;
+}
+.mark{
+  font-family:var(--disp);
+  font-size:clamp(19px,2.4vw,24px);
+  letter-spacing:.03em;
+}
+.mark em{ font-style:normal; opacity:.55; }
+.mark .ver{ font-family:var(--mono); font-size:11px; letter-spacing:.18em; opacity:.6; margin-left:8px; }
+.mode{ display:flex; align-items:center; gap:8px; font-size:10px; letter-spacing:.18em; white-space:nowrap; }
+.mode b{ font-weight:700; }
+.lbl{ font-size:9px; letter-spacing:.2em; opacity:.6; }
+
+.led{
+  width:8px; height:8px; background:var(--ink); display:inline-block;
+  animation:blink 0.9s steps(1) infinite alternate;
+}
+@keyframes blink{ to{ opacity:0; } }
+
+/* ============ TICKER ============ */
+.ticker{
+  border:2px solid var(--ink);
+  height:42px; overflow:hidden; position:relative;
+  margin-bottom:var(--gap);
+  background:var(--bg);
+  transition:background-color .2s steps(2), border-color .2s steps(2);
+}
+.track{
+  display:flex; width:max-content; height:100%; align-items:center;
+  animation:scroll 28s linear infinite;
+}
+.ticker:hover .track{ animation-play-state:paused; }
+@keyframes scroll{ to{ transform:translateX(-50%); } }
+.track span{
+  font-size:10px; letter-spacing:.22em; white-space:nowrap; padding-right:3rem;
+}
+.track i{ font-style:normal; padding:0 1.4rem; opacity:.5; }
+
+/* ============ BENTO GRID ============ */
+.bento{
+  display:grid;
+  grid-template-columns:repeat(12,1fr);
+  grid-auto-rows:var(--row);
+  gap:var(--gap);
+}
+
+.card{
+  position:relative;
+  border:2px solid var(--ink);
+  background:var(--bg);
+  overflow:hidden;
+  --fg:var(--ink);
+  transition:transform .16s steps(2), box-shadow .16s steps(2),
+             background-color .2s steps(2), border-color .2s steps(2);
+  animation:rise .5s steps(5, jump-none) backwards;
+  animation-delay:calc(var(--i) * 70ms);
+}
+@keyframes rise{ from{ opacity:0; transform:translateY(10px); } }
+
+.card:hover{
+  transform:translate(-3px,-3px);
+  box-shadow:6px 6px 0 0 var(--ink);
+}
+.wip:hover{ --fg:var(--bg); }
+
+/* dither wipe: solid fill + checker frontier */
+.w{
+  position:absolute; inset:0; z-index:1; pointer-events:none;
+  background:var(--ink);
+  clip-path:inset(100% 0 0 0);
+  transition:clip-path .5s steps(12, end);
+}
+.b{
+  position:absolute; left:-2px; right:-2px; top:100%; height:26px; z-index:5;
+  pointer-events:none;
+  background:repeating-conic-gradient(var(--ink) 0 25%, transparent 0 50%) 0 0 / 6px 6px;
+  transition:top .5s steps(12, end);
+}
+.wip:hover .w{ clip-path:inset(-3% 0 0 0); }
+.wip:hover .b{ top:-26px; }
+
+.inner{
+  position:relative; z-index:2;
+  display:flex; flex-direction:column; gap:10px;
+  height:100%; padding:16px 18px;
+  color:var(--fg);
+  transition:color .22s steps(2) .1s;
+}
+.inner *{
+  transition:color .22s steps(2) .1s, border-color .22s steps(2) .1s,
+             background-color .22s steps(2) .1s;
+}
+
+.tag{
+  position:absolute; top:9px; right:12px;
+  font-size:9px; letter-spacing:.2em; opacity:.45;
+}
+
+.lrow{ display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+.hlab{ font-size:10px; letter-spacing:.2em; display:flex; align-items:center; gap:8px; }
+.hlab::before{ content:"▮"; font-size:8px; }
+.sub{ font-size:10.5px; letter-spacing:.06em; opacity:.65; line-height:1.55; }
+
+.px{ image-rendering:pixelated; image-rendering:crisp-edges; }
+
+/* ============ CARD SPANS ============ */
+.a{ grid-column:1/9;   grid-row:1/5;  --i:1; }
+.b2{ grid-column:9/13; grid-row:1/4;  --i:2; }
+.c2{ grid-column:9/13; grid-row:4/5;  --i:3; }
+.d2{ grid-column:1/6;  grid-row:5/8;  --i:4; }
+.e2{ grid-column:6/10; grid-row:5/8;  --i:5; }
+.f2{ grid-column:10/13;grid-row:5/7;  --i:6; }
+.g2{ grid-column:10/13;grid-row:7/8;  --i:7; }
+.h2{ grid-column:1/5;  grid-row:8/12; --i:8; }
+.i2{ grid-column:5/10; grid-row:8/11; --i:9; }
+.j2{ grid-column:5/10; grid-row:11/12;--i:10; }
+.k2{ grid-column:10/13;grid-row:8/12; --i:11; }
+
+/* ---- A : masthead ---- */
+.a .inner{ padding-right:238px; }
+h1{
+  font-family:var(--disp);
+  font-weight:400;
+  font-size:clamp(40px,5.6vw,78px);
+  line-height:.96;
+  letter-spacing:.012em;
+  text-transform:uppercase;
+  margin:2px 0 6px;
+}
+.a p{ max-width:44ch; font-size:13px; opacity:.85; }
+.chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:auto; }
+.chip{
+  border:1px solid var(--fg);
+  padding:4px 9px; font-size:9.5px; letter-spacing:.14em;
+}
+.orbwrap{
+  position:absolute; right:16px; top:50%; transform:translateY(-50%);
+  width:200px; height:200px; z-index:2;
+}
+.orbwrap canvas{ width:100%; height:100%; display:block; }
+
+/* ---- B : palette ---- */
+.sw{
+  display:flex; align-items:center; gap:12px;
+  border:1px solid var(--fg); padding:8px 10px;
+}
+.sw .sq{ width:26px; height:26px; border:1px solid var(--fg); flex:none; }
+.sw .sq.dark{ background:#000; }
+.sw .sq.light{ background:#fff; }
+.sw code{ font-size:12px; }
+.sw span{ font-size:9px; letter-spacing:.16em; opacity:.6; margin-left:auto; }
+.btn{
+  margin-top:auto;
+  font-family:var(--mono);
+  font-size:11px; letter-spacing:.18em;
+  background:transparent; color:var(--ink);
+  border:2px solid var(--ink);
+  padding:11px 12px; cursor:pointer;
+  transition:background-color .12s steps(2), color .12s steps(2),
+             transform .12s steps(2);
+}
+.btn:hover{ background:var(--ink); color:var(--bg); transform:translate(-2px,-2px); box-shadow:4px 4px 0 0 var(--ink); }
+.btn:active{ transform:translate(1px,1px); box-shadow:none; }
+.hint{ font-size:9px; letter-spacing:.14em; opacity:.5; }
+
+/* ---- C : clock ---- */
+.c2 .inner{ flex-direction:row; align-items:center; gap:14px; }
+.time{
+  font-size:26px; font-weight:700; letter-spacing:.04em; line-height:1;
+  font-variant-numeric:tabular-nums;
+}
+.colon{ animation:blink 1s steps(1) infinite alternate; }
+.cright{ margin-left:auto; text-align:right; }
+.minbar{ display:flex; gap:3px; justify-content:flex-end; margin-bottom:5px; }
+.minbar i{
+  width:7px; height:13px; border:1px solid var(--fg);
+  transition:background-color .2s steps(2);
+}
+.minbar i.on{ background:var(--fg); }
+
+/* ---- D : wave ---- */
+#waveCv{ flex:1; min-height:0; width:100%; display:block; }
+.live{ font-size:9px; letter-spacing:.18em; display:flex; align-items:center; gap:6px; }
+
+/* ---- E : spectrum ---- */
+.bars{ flex:1; min-height:0; display:flex; align-items:flex-end; gap:5px; }
+.bar{
+  flex:1; background:var(--fg); height:14%;
+  animation:eq .9s steps(3, jump-none) infinite alternate;
+}
+@keyframes eq{ to{ height:var(--h,70%); } }
+.bars .bar:nth-child(1){ --h:64%; animation-duration:.82s; animation-delay:-.11s; }
+.bars .bar:nth-child(2){ --h:88%; animation-duration:.66s; animation-delay:-.40s; }
+.bars .bar:nth-child(3){ --h:47%; animation-duration:1.05s;animation-delay:-.23s; }
+.bars .bar:nth-child(4){ --h:95%; animation-duration:.74s; animation-delay:-.55s; }
+.bars .bar:nth-child(5){ --h:58%; animation-duration:1.18s;animation-delay:-.05s; }
+.bars .bar:nth-child(6){ --h:80%; animation-duration:.58s; animation-delay:-.32s; }
+.bars .bar:nth-child(7){ --h:80%; animation-duration:.61s; animation-delay:-.19s; }
+.bars .bar:nth-child(8){ --h:66%; animation-duration:1.02s;animation-delay:-.47s; }
+.bars .bar:nth-child(9){ --h:92%; animation-duration:.70s; animation-delay:-.08s; }
+.bars .bar:nth-child(10){--h:52%; animation-duration:.93s; animation-delay:-.61s; }
+.bars .bar:nth-child(11){ --h:74%; animation-duration:.79s; animation-delay:-.28s; }
+.bars .bar:nth-child(12){ --h:40%; animation-duration:1.11s;animation-delay:-.44s; }
+
+/* ---- F : flips ---- */
+.big{
+  font-size:31px; font-weight:700; letter-spacing:.05em; line-height:1;
+  font-variant-numeric:tabular-nums;
+}
+.h2card{ cursor:pointer; }
+
+/* ---- G : plate ---- */
+.g2 .inner{ flex-direction:row; align-items:center; gap:14px; }
+.tiles{ display:flex; gap:10px; margin-left:auto; align-items:flex-end; }
+.tilebox{ text-align:center; }
+.tile{
+  width:34px; height:34px; border:1px solid var(--fg);
+  transition:transform .15s steps(2), background-color .22s steps(2) .1s;
+}
+.tile:hover{ transform:scale(1.12); }
+.t25{ background-image:radial-gradient(var(--fg) 33%, transparent 35%); background-size:8px 8px; }
+.t50{ background-image:repeating-conic-gradient(var(--fg) 0 25%, transparent 0 50%); background-size:8px 8px; }
+.t75{ background-color:var(--fg); background-image:radial-gradient(transparent 33%, var(--bg) 35%); background-size:8px 8px; }
+.tcap{ font-size:8.5px; letter-spacing:.14em; opacity:.6; margin-top:4px; }
+
+/* ---- H : bayer ---- */
+.bayer{
+  flex:1; min-height:0;
+  display:grid; grid-template-columns:repeat(8,1fr); grid-auto-rows:1fr; gap:3px;
+}
+.bcell{ border:1px solid var(--fg); transition:background-color .06s steps(1); }
+.bcell.on{ background:var(--fg); }
+.state{ font-size:9px; letter-spacing:.18em; border:1px solid var(--fg); padding:2px 7px; }
+
+/* ---- I : manifesto ---- */
+.i2 p{
+  font-size:13.5px; line-height:1.75;
+}
+.cursor{
+  display:inline-block; width:.58em; height:1em;
+  background:var(--fg); vertical-align:-.14em; margin-left:2px;
+  animation:blink 1.06s steps(1) infinite alternate;
+}
+
+/* ---- J : colophon ---- */
+.j2 .inner{ gap:3px; }
+
+/* ---- K : system ---- */
+.krow{ display:flex; align-items:baseline; font-size:11px; letter-spacing:.05em; }
+.krow .lead{ flex:1; border-bottom:1px dotted var(--fg); margin:0 8px 3px; transform:translateY(-2px); opacity:.7; }
+.krow b{ font-weight:700; }
+.kfoot{
+  margin-top:auto; font-size:9px; letter-spacing:.16em; opacity:.55;
+  display:flex; justify-content:space-between;
+}
+
+/* ============ RESPONSIVE ============ */
+@media (max-width:1024px){
+  .bento{ grid-template-columns:repeat(6,1fr); }
+  .a { grid-column:1/-1; grid-row:span 5; }
+  .b2{ grid-column:1/4;  grid-row:span 4; }
+  .c2{ grid-column:4/7;  grid-row:span 4; }
+  .d2{ grid-column:1/4;  grid-row:span 3; }
+  .e2{ grid-column:4/7;  grid-row:span 3; }
+  .f2{ grid-column:1/4;  grid-row:span 3; }
+  .g2{ grid-column:4/7;  grid-row:span 3; }
+  .h2{ grid-column:1/4;  grid-row:span 4; }
+  .i2{ grid-column:4/7;  grid-row:span 3; }
+  .j2{ grid-column:4/7;  grid-row:span 2; }
+  .k2{ grid-column:1/-1; grid-row:span 4; }
+  .a .inner{ padding-right:238px; }
+}
+@media (max-width:760px){
+  .a .inner{ padding-right:18px; }
+  .orbwrap{ position:static; transform:none; width:150px; height:150px; margin-top:2px; }
+}
+@media (max-width:640px){
+  .bento{ grid-template-columns:1fr; grid-auto-rows:80px; }
+  .a{ grid-column:auto; grid-row:span 6; }
+  .b2{ grid-column:auto; grid-row:span 5; }
+  .c2{ grid-column:auto; grid-row:span 2; }
+  .d2{ grid-column:auto; grid-row:span 4; }
+  .e2{ grid-column:auto; grid-row:span 4; }
+  .f2{ grid-column:auto; grid-row:span 3; }
+  .g2{ grid-column:auto; grid-row:span 3; }
+  .h2{ grid-column:auto; grid-row:span 6; }
+  .i2{ grid-column:auto; grid-row:span 4; }
+  .j2{ grid-column:auto; grid-row:span 3; }
+  .k2{ grid-column:auto; grid-row:span 6; }
+  .bar{ font-size:13px; }
+  .mark .ver{ display:none; }
+}
+
+/* ============ REDUCED MOTION ============ */
+@media (prefers-reduced-motion: reduce){
+  .card{ animation:none; }
+  body::before, .track, .bar, .led, .colon, .cursor{ animation:none; }
+  .bar{ height:45%; }
+  .w, .b{ transition-duration:.01s; }
+}
+</style>
+</head>
+<body>
+
+<!-- ===== MASTHEAD BAR ===== -->
+<header class="bar">
+  <div class="mark">MONO<em>/</em>BENTO<span class="ver">.SYS v0x01</span></div>
+  <div class="mode">
+    <span class="led" aria-hidden="true"></span>
+    <span class="lbl">MODE:</span><b id="modeVal">DARK</b>
+    <span class="lbl">/ 1-BIT / <span id="dateVal">----</span></span>
+  </div>
+</header>
+
+<!-- ===== TICKER ===== -->
+<div class="ticker" aria-hidden="true">
+  <div class="track">
+    <span>1-BIT BENTO<i>◆</i>TWO INKS, NO APOLOGY<i>◆</i>BAYER 8×8 ORDERED DITHER<i>◆</i>STEPS() ONLY — NO EASE<i>◆</i>0 DEPENDENCIES<i>◆</i>GRAY IS A RUMOR<i>◆</i>64 SQUARES PER PIXEL VOTING BY MAJORITY<i>◆</i>SHIPPED 2 OF 16,777,216 COLORS<i>◆</i>PIXELS: YES<i>◆</i>ANTI-ALIASING: NEVER<i>◆</i></span>
+    <span>1-BIT BENTO<i>◆</i>TWO INKS, NO APOLOGY<i>◆</i>BAYER 8×8 ORDERED DITHER<i>◆</i>STEPS() ONLY — NO EASE<i>◆</i>0 DEPENDENCIES<i>◆</i>GRAY IS A RUMOR<i>◆</i>64 SQUARES PER PIXEL VOTING BY MAJORITY<i>◆</i>SHIPPED 2 OF 16,777,216 COLORS<i>◆</i>PIXELS: YES<i>◆</i>ANTI-ALIASING: NEVER<i>◆</i></span>
+  </div>
+</div>
+
+<!-- ===== BENTO ===== -->
+<main class="bento">
+
+  <!-- 01 MASTHEAD -->
+  <article class="card wip a">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">01</span>
+      <div class="lrow"><span class="hlab">CELL 01 / MASTHEAD</span><span class="lbl">FILE://BENTO.SYS</span></div>
+      <h1><span id="ln1">TWELVE CELLS,</span><br><span id="ln2">TWO INKS.</span></h1>
+      <p>An asymmetric dashboard rendered strictly in black and white. Every gray on this page is an 8×8 Bayer plate doing overtime, thresholded live on &lt;canvas&gt; — no gradients, no antialias, no mercy.</p>
+      <div class="chips">
+        <span class="chip">PLATE: BAYER 8×8</span>
+        <span class="chip">INKS: 2 / 16.7M</span>
+        <span class="chip">RATE: 12 FPS</span>
+        <span class="chip">DEPS: 0</span>
+      </div>
+    </div>
+    <div class="orbwrap"><canvas id="orbCv" class="px" role="img" aria-label="Dithered 1-bit sphere"></canvas></div>
+  </article>
+
+  <!-- 02 PALETTE -->
+  <article class="card b2">
+    <div class="inner">
+      <span class="tag">02</span>
+      <div class="lrow"><span class="hlab">PALETTE.SYS</span></div>
+      <div class="sub">2 OF 16,777,216 COLORS SHIPPED. THE OTHER 16,777,214 WERE LET GO.</div>
+      <div class="sw"><span class="sq dark"></span><code>#000000</code><span>INK</span></div>
+      <div class="sw"><span class="sq light"></span><code>#FFFFFF</code><span>PAPER</span></div>
+      <button class="btn" id="invBtn" aria-pressed="false">INVERT PLATE ▸ LIGHT</button>
+      <div class="hint">KEY [I] WORKS TOO — TWO STATES, NO BLEND</div>
+    </div>
+  </article>
+
+  <!-- 03 CLOCK -->
+  <article class="card wip c2">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">03</span>
+      <div>
+        <div class="hlab" style="margin-bottom:6px">CHRONO.DHT</div>
+        <div class="time"><span id="hh">00</span><span class="colon">:</span><span id="mm">00</span><span class="colon">:</span><span id="ss">00</span></div>
+      </div>
+      <div class="cright">
+        <div class="minbar" id="minBar" aria-hidden="true"></div>
+        <div class="sub">5-MIN BLOCKS / HOUR</div>
+      </div>
+    </div>
+  </article>
+
+  <!-- 04 WAVE -->
+  <article class="card wip d2">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">04</span>
+      <div class="lrow"><span class="hlab">OSC 01 — SINE.DHT</span><span class="live"><i class="led"></i>LIVE 12FPS</span></div>
+      <canvas id="waveCv" class="px" role="img" aria-label="Dithered animated sine wave"></canvas>
+      <div class="sub">TRACE = SIN(0.11x + t) ⊕ BAYER[x&amp;7][y&amp;7] — HALO FADED BY THRESHOLD</div>
+    </div>
+  </article>
+
+  <!-- 05 SPECTRUM -->
+  <article class="card wip e2">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">05</span>
+      <div class="lrow"><span class="hlab">OSC 02 — STEPS.EQ</span><span class="lbl">12 BANDS</span></div>
+      <div class="bars" aria-hidden="true">
+        <i class="bar"></i><i class="bar"></i><i class="bar"></i><i class="bar"></i>
+        <i class="bar"></i><i class="bar"></i><i class="bar"></i><i class="bar"></i>
+        <i class="bar"></i><i class="bar"></i><i class="bar"></i><i class="bar"></i>
+      </div>
+      <div class="sub">HEIGHTS QUANTIZED TO STEPS(3) — SMOOTH CURVES ARE A LIE</div>
+    </div>
+  </article>
+
+  <!-- 06 FLIPS -->
+  <article class="card wip f2">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">06</span>
+      <div class="lrow"><span class="hlab">PIX.FLIPS</span><span class="lbl">SESSION</span></div>
+      <div class="big" id="flipN">084 213</div>
+      <div class="sub" id="flipB">0b01010011 · LSB BYTE</div>
+      <div class="sub" style="opacity:.4">EVERY PIXEL THAT CHANGED ITS MIND</div>
+    </div>
+  </article>
+
+  <!-- 07 PLATE -->
+  <article class="card wip g2">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">07</span>
+      <div>
+        <div class="hlab">PLATE.COVER</div>
+        <div class="sub">SAME TWO DOTS, THREE OPINIONS</div>
+      </div>
+      <div class="tiles" aria-hidden="true">
+        <div class="tilebox"><div class="tile t25"></div><div class="tcap">25%</div></div>
+        <div class="tilebox"><div class="tile t50"></div><div class="tcap">50%</div></div>
+        <div class="tilebox"><div class="tile t75"></div><div class="tcap">75%</div></div>
+      </div>
+    </div>
+  </article>
+
+  <!-- 08 BAYER -->
+  <article class="card wip h2 h2card" id="bayerCard" title="Click to hold / resume">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">08</span>
+      <div class="lrow"><span class="hlab">BAYER 8×8 TBL</span><span class="state" id="bayState">RUN</span></div>
+      <div class="bayer" id="bayerGrid" aria-label="Animated 8 by 8 Bayer threshold matrix"></div>
+      <div class="sub">t = <b id="bayT">031</b> &nbsp;·&nbsp; CELLS FLIP IN THRESHOLD ORDER &nbsp;·&nbsp; CLICK TO HOLD</div>
+    </div>
+  </article>
+
+  <!-- 09 MANIFESTO -->
+  <article class="card wip i2">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">09</span>
+      <div class="lrow"><span class="hlab">MANIFESTO.TXT</span></div>
+      <p>We shipped 255 and 0 and called it a palette. Every gray here is sixty-four tiny squares in a meeting, voting by strict majority. There are no gradients on this page — only strong opinions about thresholds, re-argued twelve times a second.<span class="cursor" aria-hidden="true"></span></p>
+    </div>
+  </article>
+
+  <!-- 10 COLOPHON -->
+  <article class="card wip j2">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">10</span>
+      <span class="hlab">COLOPHON</span>
+      <div class="sub">DISPLAY: IMPACT &nbsp;·&nbsp; TEXT: SYSTEM MONO &nbsp;·&nbsp; NO WEBFONTS</div>
+      <div class="sub">EVERY SHADE THRESHOLLED AT RUNTIME &nbsp;·&nbsp; 1 FILE · 0 REQUESTS</div>
+    </div>
+  </article>
+
+  <!-- 11 SYSTEM -->
+  <article class="card wip k2">
+    <div class="w"></div><div class="b"></div>
+    <div class="inner">
+      <span class="tag">11</span>
+      <div class="lrow"><span class="hlab">SYSTEM.LOG</span><span class="led" aria-hidden="true"></span></div>
+      <div class="krow"><span>ENGINE</span><span class="lead"></span><b>CANVAS 2D</b></div>
+      <div class="krow"><span>PLATE</span><span class="lead"></span><b>BAYER 8×8</b></div>
+      <div class="krow"><span>INKS</span><span class="lead"></span><b>2</b></div>
+      <div class="krow"><span>EASING</span><span class="lead"></span><b>STEPS()</b></div>
+      <div class="krow"><span>FRAME RATE</span><span class="lead"></span><b>12 / 60 HZ</b></div>
+      <div class="krow"><span>DEPENDENCIES</span><span class="lead"></span><b>0</b></div>
+      <div class="kfoot"><span>BUILD 0x01</span><span>1-BIT DEPT.</span></div>
+    </div>
+  </article>
+
+</main>
+
+<script>
+(function(){
+  "use strict";
+  var RM = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- Bayer 8×8 ---------- */
+  var B8 = [
+    [0,32, 8,40, 2,34,10,42],
+    [48,16,56,24,50,18,58,26],
+    [12,44, 4,36,14,46, 6,38],
+    [60,28,52,20,62,30,54,22],
+    [ 3,35,11,43, 1,33, 9,41],
+    [51,19,59,27,49,17,57,25],
+    [15,47, 7,39,13,45, 5,37],
+    [63,31,55,23,61,29,53,21]
+  ];
+
+  /* ---------- theme colors ---------- */
+  function hx(h){
+    h = h.replace("#","").trim();
+    if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+    return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+  }
+  var theme = { ink:[244,244,240], bg:[14,14,14] };
+  function readTheme(){
+    var s = getComputedStyle(document.documentElement);
+    try { theme.ink = hx(s.getPropertyValue("--ink")); } catch(e){}
+    try { theme.bg  = hx(s.getPropertyValue("--bg"));  } catch(e){}
+  }
+  readTheme();
+
+  /* ---------- date in top bar ---------- */
+  (function(){
+    var d = new Date(), M = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+    var el = document.getElementById("dateVal");
+    if (el) el.textContent = d.getDate() + " " + M[d.getMonth()] + " " + d.getFullYear();
+  })();
+
+  /* ---------- scramble-decode title ---------- */
+  function scrambleTo(el, text){
+    if (!el) return;
+    if (RM){ el.textContent = text; return; }
+    var G = "▓▒░█<>/01#*+%";
+    var f = 0, per = 3, total = text.length * per + 10;
+    var seed = function(i){ return 3 + ((i * 7) % 5); };
+    var iv = setInterval(function(){
+      f++;
+      var out = "";
+      for (var i = 0; i < text.length; i++){
+        var ch = text[i];
+        if (ch === " "){ out += " "; continue; }
+        out += (f > i * per + seed(i)) ? ch : G[(Math.random() * G.length) | 0];
+      }
+      el.textContent = out;
+      if (f >= total){ el.textContent = text; clearInterval(iv); }
+    }, 42);
+  }
+  setTimeout(function(){ scrambleTo(document.getElementById("ln1"), "TWELVE CELLS,"); }, 250);
+  setTimeout(function(){ scrambleTo(document.getElementById("ln2"), "TWO INKS."); }, 550);
+
+  /* ---------- theme invert ---------- */
+  var html = document.documentElement;
+  var modeVal = document.getElementById("modeVal");
+  var invBtn  = document.getElementById("invBtn");
+  function setTheme(light){
+    html.classList.toggle("light", light);
+    if (modeVal) modeVal.textContent = light ? "LIGHT" : "DARK";
+    if (invBtn){
+      invBtn.textContent = light ? "INVERT PLATE ▸ DARK" : "INVERT PLATE ▸ LIGHT";
+      invBtn.setAttribute("aria-pressed", light ? "true" : "false");
+    }
+    readTheme();
+    drawOrb();
+  }
+  if (invBtn) invBtn.addEventListener("click", function(){ setTheme(!html.classList.contains("light")); });
+  document.addEventListener("keydown", function(e){
+    if (e.key === "i" || e.key === "I") setTheme(!html.classList.contains("light"));
+  });
+
+  /* ---------- clock ---------- */
+  var hh = document.getElementById("hh"), mm = document.getElementById("mm"), ss = document.getElementById("ss");
+  var minBar = document.getElementById("minBar"), minCells = [];
+  if (minBar){
+    for (var m = 0; m < 12; m++){
+      var c = document.createElement("i");
+      minBar.appendChild(c);
+      minCells.push(c);
+    }
+  }
+  function pad(n){ return (n < 10 ? "0" : "") + n; }
+  function tickClock(){
+    var d = new Date();
+    if (hh) hh.textContent = pad(d.getHours());
+    if (mm) mm.textContent = pad(d.getMinutes());
+    if (ss) ss.textContent = pad(d.getSeconds());
+    for (var i = 0; i < 12; i++){
+      minCells[i].classList.toggle("on", i < d.getHours());
+    }
+  }
+  tickClock();
+  setInterval(tickClock, 500);
+
+  /* ---------- flip counter ---------- */
+  var flipN = document.getElementById("flipN"), flipB = document.getElementById("flipB");
+  var flips = 84213;
+  function tickFlips(){
+    flips += 1 + ((Math.random() * 23) | 0);
+    var s = String(flips).padStart(6, "0");
+    if (flipN) flipN.textContent = s.slice(0,3) + " " + s.slice(3);
+    if (flipB) flipB.textContent = "0b" + (flips & 255).toString(2).padStart(8,"0") + " · LSB BYTE";
+  }
+  tickFlips();
+  setInterval(tickFlips, RM ? 1000 : 120);
+
+  /* ---------- bayer table card ---------- */
+  var bayerGrid = document.getElementById("bayerGrid");
+  var bayT = document.getElementById("bayT"), bayState = document.getElementById("bayState");
+  var bayerCard = document.getElementById("bayerCard");
+  var cells = [], tVal = 31, held = false;
+  if (bayerGrid){
+    for (var y = 0; y < 8; y++){
+      for (var x = 0; x < 8; x++){
+        (function(v){
+          var d = document.createElement("div");
+          d.className = "bcell";
+          d.dataset.v = v;
+          bayerGrid.appendChild(d);
+          cells.push({ el: d, v: v });
+        })(B8[y][x]);
+      }
+    }
+  }
+  function paintBayer(){
+    for (var i = 0; i < cells.length; i++){
+      cells[i].el.classList.toggle("on", cells[i].v <= tVal);
+    }
+    if (bayT) bayT.textContent = String(tVal).padStart(3, "0");
+  }
+  paintBayer();
+  if (!RM){
+    setInterval(function(){
+      if (held) return;
+      tVal = (tVal + 1) % 64;
+      paintBayer();
+    }, 70);
+  }
+  if (bayerCard){
+    bayerCard.addEventListener("click", function(){
+      held = !held;
+      if (bayState) bayState.textContent = held ? "HELD" : "RUN";
+    });
+  }
+
+  /* ---------- dither canvases ---------- */
+  function ditherOn(x, y, v){
+    return v > B8[x & 7][y & 7] / 64;
+  }
+
+  /* -- wave -- */
+  var waveCv = document.getElementById("waveCv");
+  var wctx, wImg, wt = 1, waveInvert = false;
+  function sizeWave(){
+    if (!waveCv) return;
+    var el = waveCv.parentElement;
+    var w = Math.max(20, Math.floor(el.clientWidth / 2));
+    var h = Math.max(20, Math.floor(waveCv.clientHeight / 2 || el.clientHeight / 4));
+    if (waveCv.width !== w || waveCv.height !== h){
+      waveCv.width = w; waveCv.height = h;
+      wctx = waveCv.getContext("2d");
+      wImg = wctx.createImageData(w, h);
+    }
+  }
+  function drawWave(){
+    if (!wctx || !wImg) return;
+    var w = waveCv.width, h = waveCv.height;
+    var fg = waveInvert ? theme.bg : theme.ink;
+    var d = wImg.data;
+    for (var y = 0; y < h; y++){
+      for (var x = 0; x < w; x++){
+        var s = Math.sin(x * 0.11 + wt) * 0.30
+              + Math.sin(x * 0.023 - wt * 0.6) * 0.18
+              + Math.sin(x * 0.27 + wt * 2.1) * 0.06;
+        var yy = h * 0.52 + s * h;
+        var dist = Math.abs(y - yy);
+        var v = 1 - Math.min(1, dist / 2.6);
+        var i = (y * w + x) * 4;
+        if (v > B8[x & 7][y & 7] / 64){
+          d[i] = fg[0]; d[i+1] = fg[1]; d[i+2] = fg[2]; d[i+3] = 255;
+        } else {
+          d[i+3] = 0;
+        }
+      }
+    }
+    wctx.putImageData(wImg, 0, 0);
+  }
+  if (waveCv){
+    var card = waveCv.closest(".card");
+    card.addEventListener("mouseenter", function(){ waveInvert = true; drawWave(); });
+    card.addEventListener("mouseleave", function(){ waveInvert = false; drawWave(); });
+    sizeWave();
+    if (RM){ drawWave(); }
+    else {
+      setInterval(function(){ wt += 0.45; drawWave(); }, 83);
+    }
+  }
+
+  /* -- orb -- */
+  var orbCv = document.getElementById("orbCv");
+  var orbInvert = false, ob = 100;
+  var octx = orbCv ? orbCv.getContext("2d") : null;
+  function drawOrb(){
+    if (!octx) return;
+    orbCv.width = ob; orbCv.height = ob;
+    var img = octx.createImageData(ob, ob), d = img.data;
+    var fg = orbInvert ? theme.bg : theme.ink;
+    var p = (Math.sin(performance.now() * 0.0012) + 1) / 2;
+    var craters = [[-0.28,0.20,0.30],[0.30,-0.08,0.21],[0.04,0.38,0.16]];
+    for (var y = 0; y < ob; y++){
+      for (var x = 0; x < ob; x++){
+        var nx = (x - ob*0.5) / (ob*0.5), ny = (y - ob*0.48) / (ob*0.5);
+        var r2 = nx*nx + ny*ny;
+        if (r2 > 1){ continue; }
+        var base = Math.max(0, 1 - r2);
+        var spec = Math.max(0, 1 - Math.hypot(nx + 0.34 + 0.06*p, ny + 0.40) / 0.5);
+        var v = base * 0.8 + spec * 0.5;
+        v += Math.sin(y * 0.11 + p * 6) * 0.02;
+        for (var c = 0; c < craters.length; c++){
+          var cd = Math.hypot(nx - craters[c][0], ny - craters[c][1]) / craters[c][2];
+          if (cd < 1) v *= 0.35 + 0.65 * cd;
+        }
+        var i = (y * ob + x) * 4;
+        if (v > B8[x & 7][y & 7] / 64){
+          d[i] = fg[0]; d[i+1] = fg[1]; d[i+2] = fg[2]; d[i+3] = 255;
+        }
+      }
+    }
+    octx.putImageData(img, 0, 0);
+  }
+  if (orbCv){
+    drawOrb();
+    if (!RM) setInterval(drawOrb, 300);
+    var aCard = orbCv.closest(".card");
+    aCard.addEventListener("mouseenter", function(){ orbInvert = true; drawOrb(); });
+    aCard.addEventListener("mouseleave", function(){ orbInvert = false; drawOrb(); });
+  }
+
+  /* ---------- resize ---------- */
+  window.addEventListener("resize", function(){
+    sizeWave();
+    drawWave();
+  });
+})();
+</script>
+</body>
+</html>

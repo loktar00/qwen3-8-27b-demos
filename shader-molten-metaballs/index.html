@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Molten Metaballs</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #050403;
+  }
+  canvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    display: block;
+  }
+  #fb {
+    z-index: 1;
+  }
+  #gl {
+    z-index: 2;
+  }
+  .hidden {
+    display: none !important;
+  }
+  #panel {
+    position: fixed;
+    left: 12px;
+    bottom: 12px;
+    z-index: 10;
+    width: min(360px, 46vw);
+    max-height: 44vh;
+    display: flex;
+    flex-direction: column;
+    background: rgba(12, 8, 5, 0.88);
+    border: 1px solid #3a2a1a;
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-sizing: border-box;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+    color: #b8a58f;
+  }
+  #ptitle {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: #e8c9a0;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #status {
+    font-size: 10px;
+    margin-bottom: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #status.err {
+    color: #ff8a5c;
+  }
+  #panel pre {
+    margin: 0;
+    max-height: calc(44vh - 64px);
+    overflow: auto;
+    border-top: 1px solid #2c2015;
+    padding-top: 6px;
+  }
+  #panel code {
+    font-size: 9.5px;
+    line-height: 1.45;
+    white-space: pre;
+    color: #a08d78;
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="fb" class="hidden"></canvas>
+<div id="panel">
+  <div id="ptitle">Molten Metaballs &mdash; diagnostics</div>
+  <div id="status">initializing&hellip;</div>
+  <pre><code id="src"></code></pre>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  var statusEl = document.getElementById("status");
+  var srcEl = document.getElementById("src");
+  var glCanvas = document.getElementById("gl");
+  var fbCanvas = document.getElementById("fb");
+  var failed = false;
+
+  var VERT =
+    "#version 300 es\n" +
+    "layout(location=0) in vec2 aPos;\n" +
+    "void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+  var FRAG =
+"#version 300 es\n" +
+"precision highp float;\n" +
+"\n" +
+"uniform vec2 uRes;\n" +
+"uniform float uTime;\n" +
+"out vec4 frag;\n" +
+"\n" +
+"#define RAY_STEPS 80\n" +
+"#define REF_STEPS 32\n" +
+"#define FAR 7.0\n" +
+"\n" +
+"float hash11(float p){ p = fract(p*0.1031); p *= p + 33.33; p *= p + p; return fract(p); }\n" +
+"float hash13(vec3 p){ p = fract(p*0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y)*p.z); }\n" +
+"\n" +
+"float smin(float a, float b, float k){\n" +
+"  float h = clamp(0.5 + 0.5*(b - a)/k, 0.0, 1.0);\n" +
+"  return mix(b, a, h) - k*h*(1.0 - h);\n" +
+"}\n" +
+"\n" +
+"vec4 blob(int i){\n" +
+"  float t = uTime;\n" +
+"  if(i==0) return vec4(0.55*sin(t*0.31), 0.46 + 0.16*sin(t*0.23 + 1.7), 0.50*cos(t*0.27), 0.50);\n" +
+"  if(i==1) return vec4(-0.60*sin(t*0.26 + 2.0), 0.44 + 0.14*sin(t*0.31 + 4.1), -0.45*sin(t*0.21), 0.42);\n" +
+"  if(i==2) return vec4(0.35 + 0.20*sin(t*0.19 + 5.0), 0.36 + 0.18*sin(t*0.29 + 2.5), 0.20*sin(t*0.33), 0.36);\n" +
+"  return vec4(-0.45*cos(t*0.17 + 1.0), 0.52 + 0.11*sin(t*0.34 + 3.3), 0.32*cos(t*0.24 + 0.6), 0.28);\n" +
+"}\n" +
+"\n" +
+"float sdBalls(vec3 p){\n" +
+"  float d = 1e5;\n" +
+"  for(int i = 0; i < 4; i++){\n" +
+"    vec4 b = blob(i);\n" +
+"    d = smin(d, length(p - b.xyz) - b.w, 0.60);\n" +
+"  }\n" +
+"  return d;\n" +
+"}\n" +
+"\n" +
+"vec2 map(vec3 p){\n" +
+"  float dm = sdBalls(p);\n" +
+"  float df = p.y + 0.18;\n" +
+"  if(df < dm) return vec2(df, 2.0);\n" +
+"  return vec2(dm, 1.0);\n" +
+"}\n" +
+"\n" +
+"vec2 march(vec3 ro, vec3 rd, float tmax){\n" +
+"  float t = 0.0;\n" +
+"  for(int i = 0; i < RAY_STEPS; i++){\n" +
+"    vec2 h = map(ro + rd*t);\n" +
+"    if(h.x < max(0.0008, t*0.0010)) return vec2(t, h.y);\n" +
+"    t += h.x * 0.9;\n" +
+"    if(t > tmax) break;\n" +
+"  }\n" +
+"  return vec2(-1.0, 0.0);\n" +
+"}\n" +
+"\n" +
+"vec2 marchRef(vec3 ro, vec3 rd, float tmax){\n" +
+"  float t = 0.0;\n" +
+"  for(int i = 0; i < REF_STEPS; i++){\n" +
+"    vec2 h = map(ro + rd*t);\n" +
+"    if(h.x < max(0.0015, t*0.0015)) return vec2(t, h.y);\n" +
+"    t += h.x * 0.9;\n" +
+"    if(t > tmax) break;\n" +
+"  }\n" +
+"  return vec2(-1.0, 0.0);\n" +
+"}\n" +
+"\n" +
+"vec3 nrm(vec3 p){\n" +
+"  const float e = 0.0012;\n" +
+"  const vec2 k = vec2(1.0, -1.0);\n" +
+"  return normalize(k.xyy*map(p + k.xyy*e).x\n" +
+"                 + k.yyx*map(p + k.yyx*e).x\n" +
+"                 + k.yxy*map(p + k.yxy*e).x\n" +
+"                 + k.xxx*map(p + k.xxx*e).x);\n" +
+"}\n" +
+"\n" +
+"float calcAO(vec3 p, vec3 n){\n" +
+"  float occ = 0.0;\n" +
+"  float sca = 1.0;\n" +
+"  for(int i = 0; i < 5; i++){\n" +
+"    float h = 0.02 + 0.11*float(i);\n" +
+"    float d = map(p + n*h).x;\n" +
+"    occ += (h - d)*sca;\n" +
+"    sca *= 0.75;\n" +
+"  }\n" +
+"  return clamp(1.0 - 1.6*occ, 0.0, 1.0);\n" +
+"}\n" +
+"\n" +
+"float heat(vec3 p){\n" +
+"  float h = 0.0;\n" +
+"  for(int i = 0; i < 4; i++){\n" +
+"    vec4 b = blob(i);\n" +
+"    float x = length(p - b.xyz)/b.w;\n" +
+"    h = max(h, smoothstep(1.15, 0.10, x));\n" +
+"  }\n" +
+"  return h;\n" +
+"}\n" +
+"\n" +
+"vec3 lightPos(){\n" +
+"  float t = uTime;\n" +
+"  return vec3(0.95*sin(t*0.42 + 1.0), 0.75 + 0.25*sin(t*0.31), 0.85*cos(t*0.42 + 1.0));\n" +
+"}\n" +
+"\n" +
+"vec3 chamberEnv(vec3 rd){\n" +
+"  float up = clamp(rd.y*0.5 + 0.5, 0.0, 1.0);\n" +
+"  vec3 c = mix(vec3(0.032, 0.021, 0.014), vec3(0.006, 0.005, 0.004), up);\n" +
+"  c += vec3(0.15, 0.05, 0.012)*exp(-pow((rd.y + 0.25)*3.2, 2.0));\n" +
+"  vec3 ldir = normalize(lightPos());\n" +
+"  c += vec3(1.0, 0.45, 0.12)*pow(max(dot(rd, ldir), 0.0), 20.0)*0.6;\n" +
+"  vec3 sp = rd*4.0;\n" +
+"  sp.y += uTime*0.35;\n" +
+"  vec3 id = floor(sp);\n" +
+"  vec3 f = fract(sp) - 0.5;\n" +
+"  float h = hash13(id);\n" +
+"  c += vec3(1.0, 0.55, 0.18)*step(0.84, h)*exp(-dot(f, f)*150.0)*0.5;\n" +
+"  return c;\n" +
+"}\n" +
+"\n" +
+"vec3 shadePoint(vec3 p, vec3 n, vec3 rd, float mat, float ao){\n" +
+"  vec3 V = -rd;\n" +
+"  vec3 L = lightPos() - p;\n" +
+"  float ld = length(L);\n" +
+"  L /= ld;\n" +
+"  float att = clamp(1.0 - 0.08*ld - 0.015*ld*ld, 0.0, 1.0);\n" +
+"  vec3 lc = vec3(1.0, 0.60, 0.22)*att;\n" +
+"  float ndl = max(dot(n, L), 0.0);\n" +
+"  vec3 H = normalize(L + V);\n" +
+"  vec3 alb = (mat < 1.5) ? vec3(0.055, 0.050, 0.048) : vec3(0.030, 0.028, 0.026);\n" +
+"  float spP = (mat < 1.5) ? 110.0 : 24.0;\n" +
+"  float spA = (mat < 1.5) ? 1.6 : 0.7;\n" +
+"  vec3 col = alb*(0.18 + 0.82*ao)*0.5;\n" +
+"  col += alb*ndl*0.6;\n" +
+"  col += lc*pow(max(dot(n, H), 0.0), spP)*ndl*spA;\n" +
+"  col += lc*pow(ndl, 3.0)*0.10;\n" +
+"  float hv = heat(p);\n" +
+"  col += (vec3(0.75, 0.22, 0.03) + vec3(1.0, 0.72, 0.32)*hv)*pow(hv, 1.5)*1.6;\n" +
+"  return col;\n" +
+"}\n" +
+"\n" +
+"vec3 aces(vec3 x){\n" +
+"  return clamp((x*(2.51*x + 0.03))/(x*(2.43*x + 0.59) + 0.14), 0.0, 1.0);\n" +
+"}\n" +
+"\n" +
+"void main(){\n" +
+"  vec2 uv = (gl_FragCoord.xy*2.0 - uRes)/uRes.y;\n" +
+"  vec3 ro = vec3(0.12*sin(uTime*0.11), 0.72 + 0.05*sin(uTime*0.13 + 2.0), 2.15 + 0.10*sin(uTime*0.09));\n" +
+"  vec3 ta = vec3(0.0, 0.42, 0.0);\n" +
+"  vec3 fw = normalize(ta - ro);\n" +
+"  vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));\n" +
+"  vec3 up = cross(rt, fw);\n" +
+"  vec3 rd = normalize(fw*1.6 + uv.x*rt + uv.y*up);\n" +
+"\n" +
+"  vec3 col;\n" +
+"  vec2 hit = march(ro, rd, FAR);\n" +
+"  if(hit.x < 0.0){\n" +
+"    col = chamberEnv(rd);\n" +
+"  } else {\n" +
+"    vec3 p = ro + rd*hit.x;\n" +
+"    vec3 n = nrm(p);\n" +
+"    float ao = calcAO(p, n);\n" +
+"    vec3 V = -rd;\n" +
+"    float ndv = max(dot(n, V), 0.0);\n" +
+"    float fres = (hit.y < 1.5) ? 0.15 + 0.85*pow(1.0 - ndv, 5.0) : 0.03 + 0.15*pow(1.0 - ndv, 5.0);\n" +
+"\n" +
+"    vec3 rr = reflect(rd, n);\n" +
+"    vec2 rh = marchRef(p + n*0.002, rr, 3.5);\n" +
+"    vec3 refl;\n" +
+"    if(rh.x < 0.0){\n" +
+"      refl = chamberEnv(rr);\n" +
+"    } else {\n" +
+"      vec3 rp = p + n*0.002 + rr*rh.x;\n" +
+"      refl = shadePoint(rp, nrm(rp), -rr, rh.y, 1.0);\n" +
+"    }\n" +
+"\n" +
+"    vec3 base = shadePoint(p, n, rd, hit.y, ao);\n" +
+"    vec3 Ld = normalize(lightPos() - p);\n" +
+"    float rim = pow(1.0 - ndv, 3.0)*ao*max(dot(n, Ld), 0.0);\n" +
+"    col = mix(base, refl, fres) + vec3(1.0, 0.45, 0.15)*rim*0.35;\n" +
+"  }\n" +
+"\n" +
+"  float vig = 1.0 - 0.35*dot(uv*0.55, uv*0.55);\n" +
+"  col *= vig;\n" +
+"  float g = hash11(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)) + fract(uTime)*61.7);\n" +
+"  col += (g - 0.5)*0.012;\n" +
+"\n" +
+"  col = aces(col*1.15);\n" +
+"  col = pow(col, vec3(1.0/2.2));\n" +
+"  frag = vec4(col, 1.0);\n" +
+"}\n";
+
+  srcEl.textContent = FRAG;
+
+  function setStatus(msg, isErr) {
+    statusEl.textContent = msg;
+    if (isErr) statusEl.className = "err";
+    else statusEl.className = "";
+  }
+
+  var gl = null, prog = null, uRes = null, uTime = null, vao = null;
+
+  function compileShader(type, src) {
+    var sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      throw "shader compile: " + gl.getShaderInfoLog(sh);
+    }
+    return sh;
+  }
+
+  function initGL() {
+    gl = glCanvas.getContext("webgl2", {
+      antialias: false, depth: false, stencil: false, alpha: false,
+      powerPreference: "high-performance"
+    });
+    if (!gl) throw "WebGL2 context unavailable";
+
+    setStatus("WebGL2: ok \u00b7 compiling\u2026");
+    var vs = compileShader(gl.VERTEX_SHADER, VERT);
+    var fs = compileShader(gl.FRAGMENT_SHADER, FRAG);
+    prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw "program link: " + gl.getProgramInfoLog(prog);
+    }
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+
+    vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    var buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+    uRes = gl.getUniformLocation(prog, "uRes");
+    uTime = gl.getUniformLocation(prog, "uTime");
+    gl.useProgram(prog);
+    gl.bindVertexArray(vao);
+  }
+
+  var RES_SCALE = 0.85;
+
+  function resizeGL() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+    var w = Math.max(1, Math.floor(window.innerWidth * dpr * RES_SCALE));
+    var h = Math.max(1, Math.floor(window.innerHeight * dpr * RES_SCALE));
+    if (glCanvas.width !== w || glCanvas.height !== h) {
+      glCanvas.width = w;
+      glCanvas.height = h;
+      gl.viewport(0, 0, w, h);
+      setStatus("WebGL2: ok \u00b7 compile: ok \u00b7 link: ok \u00b7 " + w + "\u00d7" + h);
+    }
+  }
+
+  function frameGL(now) {
+    if (failed) return;
+    try {
+      resizeGL();
+      gl.uniform2f(uRes, glCanvas.width, glCanvas.height);
+      gl.uniform1f(uTime, now * 0.001);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    } catch (e) {
+      fail("render: " + (e && e.message ? e.message : String(e)));
+      return;
+    }
+    window.requestAnimationFrame(frameGL);
+  }
+
+  var fbRunning = false;
+
+  function startFallback() {
+    if (fbRunning) return;
+    fbRunning = true;
+    var ctx = fbCanvas.getContext("2d");
+    if (!ctx) return;
+
+    var sparks = [];
+    function mkSpark(anywhere) {
+      return {
+        x: Math.random(),
+        y: anywhere ? Math.random() : 1.05,
+        s: 0.6 + Math.random() * 1.7,
+        v: 0.02 + Math.random() * 0.05,
+        ph: Math.random() * 6.283,
+        a: 0.15 + Math.random() * 0.45
+      };
+    }
+    for (var i = 0; i < 55; i++) sparks.push(mkSpark(true));
+
+    var blobs = [
+      { bx: 0.00,  ax: 0.14, fx: 0.31, px: 0.0,  cy: 0.28, ay: 0.040, fy: 0.23, py: 1.7, r: 0.165 },
+      { bx: -0.17, ax: 0.17, fx: 0.26, px: 2.0,  cy: 0.29, ay: 0.035, fy: 0.31, py: 4.1, r: 0.135 },
+      { bx: 0.15,  ax: 0.06, fx: 0.19, px: 5.0,  cy: 0.31, ay: 0.045, fy: 0.29, py: 2.5, r: 0.115 },
+      { bx: -0.09, ax: 0.13, fx: 0.17, px: 1.0,  cy: 0.33, ay: 0.028, fy: 0.34, py: 3.3, r: 0.088 }
+    ];
+
+    function fresize() {
+      var dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+      fbCanvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+      fbCanvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+    }
+    fresize();
+    window.addEventListener("resize", fresize);
+
+    function blobPositions(t, w, h, m) {
+      var out = [];
+      for (var i = 0; i < blobs.length; i++) {
+        var b = blobs[i];
+        out.push({
+          x: w * (0.5 + b.bx + b.ax * Math.sin(t * b.fx + b.px)),
+          y: h * (0.42 - (b.cy + b.ay * Math.sin(t * b.fy + b.py))) * 0 + h * (0.46 - (b.cy + b.ay * Math.sin(t * b.fy + b.py))),
+          r: b.r * m
+        });
+      }
+      return out;
+    }
+
+    function paintBlobs(list, alphaMul) {
+      for (var i = 0; i < list.length; i++) {
+        var p = list[i];
+        var g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
+        g.addColorStop(0.00, "rgba(255,228,158,0.95)");
+        g.addColorStop(0.18, "rgba(255,158,58,0.85)");
+        g.addColorStop(0.45, "rgba(190,70,14,0.55)");
+        g.addColorStop(0.75, "rgba(60,18,6,0.22)");
+        g.addColorStop(1.00, "rgba(0,0,0,0)");
+        ctx.globalAlpha = alphaMul;
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, 6.283);
+        ctx.fill();
+
+        var sg = ctx.createRadialGradient(p.x - p.r * 0.35, p.y - p.r * 0.42, 0, p.x - p.r * 0.35, p.y - p.r * 0.42, p.r * 0.4);
+        sg.addColorStop(0, "rgba(255,246,220," + (0.5 * alphaMul) + ")");
+        sg.addColorStop(1, "rgba(255,246,220,0)");
+        ctx.fillStyle = sg;
+        ctx.beginPath();
+        ctx.arc(p.x - p.r * 0.35, p.y - p.r * 0.42, p.r * 0.4, 0, 6.283);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    var last = performance.now();
+
+    function frameFB(now) {
+      var dt = Math.min(0.1, (now - last) * 0.001);
+      last = now;
+      var t = now * 0.001;
+      var w = fbCanvas.width, h = fbCanvas.height;
+      if (w < 2 || h < 2) { window.requestAnimationFrame(frameFB); return; }
+      var m = Math.min(w, h);
+      var floorY = h * 0.72;
+
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+      var bg = ctx.createLinearGradient(0, 0, 0, h);
+      bg.addColorStop(0, "#050403");
+      bg.addColorStop(0.7, "#0a0604");
+      bg.addColorStop(1, "#160b04");
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, w, h);
+
+      var fg = ctx.createRadialGradient(w * 0.5, floorY, 0, w * 0.5, floorY, w * 0.6);
+      fg.addColorStop(0, "rgba(140,45,8,0.30)");
+      fg.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = fg;
+      ctx.fillRect(0, 0, w, h);
+
+      var list = blobPositions(t, w, h, m);
+
+      var lg = ctx.createRadialGradient(w * (0.2 + 0.1 * Math.sin(t * 0.42)), h * (0.18 + 0.05 * Math.sin(t * 0.31)), 0,
+                                         w * (0.2 + 0.1 * Math.sin(t * 0.42)), h * (0.18 + 0.05 * Math.sin(t * 0.31)), m * 0.3);
+      lg.addColorStop(0, "rgba(255,170,70,0.35)");
+      lg.addColorStop(1, "rgba(255,170,70,0)");
+      ctx.fillStyle = lg;
+      ctx.fillRect(0, 0, w, h);
+
+      for (var i = 0; i < list.length; i++) {
+        var p = list[i];
+        ctx.save();
+        ctx.translate(p.x, floorY + 4);
+        ctx.scale(1, 0.20);
+        var sh = ctx.createRadialGradient(0, 0, 0, 0, 0, p.r * 0.95);
+        sh.addColorStop(0, "rgba(0,0,0,0.65)");
+        sh.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = sh;
+        ctx.beginPath();
+        ctx.arc(0, 0, p.r * 0.95, 0, 6.283);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.globalCompositeOperation = "lighter";
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, floorY, w, h - floorY);
+      ctx.clip();
+      ctx.translate(0, floorY * 2);
+      ctx.scale(1, -0.7);
+      paintBlobs(list, 0.20);
+      ctx.restore();
+      paintBlobs(list, 1.0);
+
+      for (var s = 0; s < sparks.length; s++) {
+        var sp = sparks[s];
+        sp.y -= sp.v * dt;
+        sp.x += Math.sin(t * 0.7 + sp.ph) * 0.0004;
+        if (sp.y < -0.03) { sparks[s] = sp = mkSpark(false); }
+        var tw = 0.5 + 0.5 * Math.sin(t * 3.1 + sp.ph * 5.0);
+        ctx.fillStyle = "rgba(255,180,90," + (sp.a * tw).toFixed(3) + ")";
+        ctx.beginPath();
+        ctx.arc(sp.x * w, sp.y * h, sp.s, 0, 6.283);
+        ctx.fill();
+      }
+      ctx.globalCompositeOperation = "source-over";
+
+      window.requestAnimationFrame(frameFB);
+    }
+    window.requestAnimationFrame(frameFB);
+  }
+
+  function fail(msg) {
+    if (failed) return;
+    failed = true;
+    setStatus("error: " + msg, true);
+    glCanvas.classList.add("hidden");
+    fbCanvas.classList.remove("hidden");
+    startFallback();
+  }
+
+  window.addEventListener("error", function (ev) {
+    if (!failed) fail("uncaught: " + (ev && ev.message ? ev.message : "unknown"));
+  });
+
+  try {
+    initGL();
+    window.addEventListener("resize", function () { if (!failed) resizeGL(); });
+    glCanvas.addEventListener("webglcontextlost", function () {
+      fail("WebGL2 context lost");
+    }, false);
+    resizeGL();
+    setStatus("WebGL2: ok \u00b7 compile: ok \u00b7 link: ok \u00b7 " + glCanvas.width + "\u00d7" + glCanvas.height);
+    window.requestAnimationFrame(frameGL);
+  } catch (e) {
+    fail(e && e.message ? e.message : String(e));
+  }
+})();
+</script>
+</body>
+</html>
